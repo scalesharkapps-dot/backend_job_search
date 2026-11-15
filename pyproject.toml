@@ -1,0 +1,26 @@
+[project]
+name = "sharkhire-backend"
+version = "1.0.0"
+description = "SharkHire job-search backend (FastAPI)"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "C4", "SIM", "RUF"]
+ignore = [
+    "S101",   # assert is used for internal invariants and in tests
+    "B008",   # FastAPI Depends()/Query() in defaults is idiomatic
+    "RUF012", # mutable class attributes on pydantic/sqlalchemy models are fine
+    "SIM108", # ternaries are not always clearer
+    "RUF001", "RUF002", "RUF003",  # unicode punctuation in docs/strings is intentional
+    "UP040",
+    "SIM102", # nested ifs are kept where they mirror the parsing rules
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108", "S311", "B017", "SIM117", "E501"]
+"app/core/config.py" = ["S105"]
