@@ -24,3 +24,5 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S108", "S311", "B017", "SIM117", "E501"]
 "app/core/config.py" = ["S105"]
+"scripts/e2e_supabase_audit.py" = ["E501", "E702", "S603"]
+"scripts/verify_supabase_db.py" = ["E501", "E702", "S608"]  # dense one-check-per-line audit script

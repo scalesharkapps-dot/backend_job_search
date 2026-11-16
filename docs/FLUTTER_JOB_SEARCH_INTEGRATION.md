@@ -65,7 +65,8 @@ stored copy is shown; `listing_unavailable: true` means the provider no longer l
 ```
 `null` salary means *unknown*, not zero. Use the SharkHire `id` for saving, matching and applications.
 
-11. **Errors**: `422` invalid params · `429 job_search_rate_limited` (wait `Retry-After`) ·
+11. **Errors**: `422` invalid params · `429 job_search_rate_limited` (wait `Retry-After`; also returned when the monthly
+RapidAPI quota reserve is reached — cached results are still served as `stale`) ·
 `503 job_search_unavailable` / `job_search_not_configured` · `502 job_search_bad_response`.
 
 12. **Loading/empty states**: show a skeleton while loading; `items: []` with message "No jobs found for this search."

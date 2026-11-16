@@ -357,9 +357,19 @@ async def test_unsupported_algorithm_rs512(client):
     assert r.json()["error"]["code"] == "unsupported_algorithm"
 
 
+async def test_leftover_legacy_secret_does_not_enable_hs256(client):
+    """A configured legacy secret alone must not make HS256 tokens acceptable."""
+    secret = "legacy-jwt-secret-with-at-least-32-characters"
+    get_settings().SUPABASE_JWT_SECRET = __import__("pydantic").SecretStr(secret)
+    forged = make_token(key=secret, algorithm="HS256")
+    r = await client.get("/api/v1/auth/me", headers=auth_header(forged))
+    assert r.status_code == 401 and r.json()["error"]["code"] == "unsupported_algorithm"
+
+
 async def test_legacy_hs256_secret_supported(client):
     secret = "legacy-jwt-secret-with-at-least-32-characters"
     get_settings().SUPABASE_JWT_SECRET = __import__("pydantic").SecretStr(secret)
+    get_settings().SUPABASE_JWT_ALGORITHMS = "ES256,RS256,HS256"  # explicit opt-in
     r = await client.get("/api/v1/auth/me", headers=auth_header(make_token(key=secret, algorithm="HS256")))
     assert r.status_code == 200
     bad = make_token(key="wrong-secret-wrong-secret-wrong-secret", algorithm="HS256")
@@ -452,3 +462,10 @@ async def test_concurrent_first_login_sync(db):
 async def test_verify_rejects_empty():
     with pytest.raises(AuthenticationError):
         await verify_access_token("")
+
+
+async def test_login_banned_at_supabase(client, supabase):
+    """Supabase returns 400 user_banned for users suspended via the admin API (observed live)."""
+    supabase.add("POST", "grant_type=password", httpx.Response(400, json={"code": 400, "error_code": "user_banned", "msg": "User is banned"}))
+    r = await client.post("/api/v1/auth/login", json={"email": "banned@example.com", "password": STRONG})
+    assert r.status_code == 401 and r.json()["error"]["code"] == "account_suspended"

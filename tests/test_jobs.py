@@ -508,3 +508,121 @@ def test_client_extract_shapes():
     assert cursor == "c2"
     jobs, _ = JSearchClient._extract({"data": None})
     assert jobs == []
+
+
+# ---------------- Plan quota guard (RapidAPI x-ratelimit-requests-*) ----------------
+def quota_headers(remaining: int, reset: int = 3600, limit: int = 200) -> dict[str, str]:
+    return {"x-ratelimit-requests-limit": str(limit), "x-ratelimit-requests-remaining": str(remaining),
+            "x-ratelimit-requests-reset": str(reset)}
+
+
+async def test_quota_reserve_stops_provider_calls(client, jsearch, user_factory):
+    _, headers = await user_factory()
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([raw_job()]), headers=quota_headers(5)))
+    assert (await search(client, headers, location="Lahore")).status_code == 200  # reports 5 left (= reserve)
+    r = await search(client, headers, location="Karachi")  # different query: would need a provider call
+    assert r.status_code == 429 and r.json()["error"]["code"] == "job_search_rate_limited"
+    assert 3500 <= int(r.headers["Retry-After"]) <= 3600
+    assert "quota" in r.json()["error"]["message"].lower()
+    assert len(jsearch.requests) == 1  # the reserve was never spent
+
+
+async def test_quota_reserve_serves_stale_cache(client, jsearch, user_factory, db):
+    _, headers = await user_factory()
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([raw_job()]), headers=quota_headers(3)))
+    await search(client, headers)
+    entry = await db.scalar(select(JobSearchCache))
+    entry.expires_at = utcnow() - timedelta(seconds=1)
+    await db.commit()
+    r = await search(client, headers)
+    assert r.status_code == 200 and r.json()["data"]["pagination"]["stale"] is True
+    assert len(jsearch.requests) == 1
+
+
+async def test_quota_above_reserve_and_period_reset(client, jsearch, user_factory, monkeypatch):
+    from app.services.jsearch import client as jclient
+
+    _, headers = await user_factory()
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([]), headers=quota_headers(6, reset=1)))
+    assert (await search(client, headers, location="A")).status_code == 200
+    assert (await search(client, headers, location="B")).status_code == 200  # 6 > reserve 5
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([]), headers=quota_headers(2, reset=1)))
+    await search(client, headers, location="C")
+    assert (await search(client, headers, location="D")).status_code == 429
+    real = jclient.time.monotonic
+    monkeypatch.setattr(jclient.time, "monotonic", lambda: real() + 5)  # billing period has reset
+    assert (await search(client, headers, location="E")).status_code == 200
+
+
+async def test_quota_guard_disabled_and_missing_headers(client, jsearch, user_factory):
+    get_settings().JSEARCH_QUOTA_RESERVE = 0
+    _, headers = await user_factory()
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([]), headers=quota_headers(0)))
+    assert (await search(client, headers, location="A")).status_code == 200
+    assert (await search(client, headers, location="B")).status_code == 200
+    get_settings().JSEARCH_QUOTA_RESERVE = 5
+    from app.services.jsearch.client import plan_quota
+
+    plan_quota.reset()
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([])))  # no quota headers at all
+    assert (await search(client, headers, location="C")).status_code == 200
+    assert (await search(client, headers, location="D")).status_code == 200
+
+
+async def test_quota_visible_on_admin_dashboard(client, jsearch, user_factory):
+    from app.models.user import UserRole
+
+    _, seeker = await user_factory()
+    _, admin = await user_factory(UserRole.ADMIN)
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=search_payload([]), headers=quota_headers(150)))
+    await search(client, seeker)
+    q = (await client.get("/api/v1/admin/dashboard", headers=admin)).json()["data"]["jsearch_quota"]
+    assert q["limit"] == 200 and q["remaining"] == 150 and q["resets_in_seconds"] > 3500
+
+
+# ---------------- Real /search-v2 field set (observed live 2026-11-17) ----------------
+def real_v2_job(**overrides):
+    job = {
+        "job_id": "Zx1Abc==", "job_uid": "uid-123", "job_title": "Python Developer", "employer_name": "Cloudtek",
+        "employer_logo": None, "employer_website": None, "employer_reviews": [], "job_publisher": "Jooble",
+        "job_employment_type": "Full-time", "job_employment_types": ["FULLTIME"],
+        "job_apply_link": "https://pk.jooble.org/desc/123", "job_apply_is_direct": False,
+        "apply_options": [{"publisher": "Jooble", "apply_link": "https://pk.jooble.org/desc/123", "is_direct": False}],
+        "job_description": "We are hiring a Python developer with Django and REST API experience.",
+        "job_is_remote": False, "job_posted_at": "7 days ago", "job_posted_at_timestamp": 1794182400,
+        "job_posted_at_datetime_utc": "2026-11-09T00:00:00.000Z", "job_location": "Islamabad", "job_city": "Islamabad",
+        "job_state": "Islamabad Capital Territory", "job_country": "PK", "job_latitude": 33.68, "job_longitude": 73.04,
+        "job_benefits": None, "job_benefits_strings": [], "job_google_link": "https://www.google.com/search?q=x",
+        "job_salary": None, "job_salary_string": None, "job_min_salary": None, "job_max_salary": None,
+        "job_salary_period": None, "job_highlights": {}, "job_onet_soc": "15113200", "job_onet_job_zone": "4",
+    }
+    job.update(overrides)
+    return job
+
+
+@pytest.mark.unit
+def test_normalize_real_v2_shape():
+    n = normalize_job(real_v2_job())
+    assert n["external_id"] == "Zx1Abc==" and n["employment_type"] == "FULLTIME" and n["country"] == "pk"
+    assert n["apply_url"] == "https://pk.jooble.org/desc/123" and n["posted_at"] is not None
+    assert n["highlights"] == {} and n["min_salary"] is None and n["salary_text"] is None
+    assert n["required_skills"] == []  # provider gives none; recommendations infer them from the text
+
+
+@pytest.mark.unit
+def test_normalize_real_v2_without_dates_or_city():
+    """5 of 10 live Pakistan results had no posted date in any field and no city."""
+    n = normalize_job(real_v2_job(job_posted_at=None, job_posted_at_timestamp=None, job_posted_at_datetime_utc=None,
+                                  job_city=None, job_state=None, job_location="Pakistan"))
+    assert n["posted_at"] is None and n["location"] == "Pakistan" and n["city"] is None
+
+
+async def test_search_real_v2_payload(client, jsearch, user_factory):
+    _, headers = await user_factory()
+    payload = {"status": "OK", "request_id": "r", "parameters": {"query": "python developer in pakistan"},
+               "data": {"jobs": [real_v2_job(), real_v2_job(job_id="Other==", employer_name="Devsinc", job_employment_type="Contractor",
+                                                            job_employment_types=["CONTRACTOR"])], "cursor": "opaque-cursor"}}
+    jsearch.add("GET", "/search-v2", httpx.Response(200, json=payload))
+    data = (await search(client, headers, location="Pakistan")).json()["data"]
+    assert [i["job_employment_type"] for i in data["items"]] == ["FULLTIME", "CONTRACTOR"]
+    assert data["pagination"]["next_cursor"] == "opaque-cursor" and data["pagination"]["country"] == "pk"

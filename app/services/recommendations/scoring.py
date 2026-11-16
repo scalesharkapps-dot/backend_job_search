@@ -144,8 +144,10 @@ def explain(result: MatchResult, candidate: CandidateProfile, req: JobRequiremen
         concerns.append(f"Nice-to-have skills you could add: {_join(result.missing_preferred_skills)}.")
 
     exp = c["experience"]
-    if exp.label == "meets":
+    if exp.label == "meets" and req.min_years:
         reasons.append(f"Your experience ({candidate.years_of_experience:g} years) meets the requirement of {req.min_years:g}+ years.")
+    elif exp.label == "meets":
+        reasons.append("The role is open to your experience level (no minimum experience required).")
     elif exp.label == "overqualified":
         concerns.append("You may be more experienced than this role targets.")
     elif exp.label in {"slightly_below", "below"}:

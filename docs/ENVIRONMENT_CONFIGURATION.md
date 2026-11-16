@@ -11,6 +11,12 @@ git-ignored `.env`. The complete annotated list is in [`.env.example`](../.env.e
 | staging | pre-production | behaves like production but not validated as strictly |
 | production | live | startup validation (below) |
 
+## Loading rules
+- `DATABASE_URL` must start with `postgresql://` (or `postgres://`); otherwise startup fails with a clear message.
+- Configuration errors are reported as `field: message` only — values (secrets) are never printed.
+- `SHARKHIRE_ENV_FILE` overrides the dotenv path; empty disables it (the test suite does this so it never reads real
+  credentials).
+
 ## Production startup validation (`Settings.validate_production`)
 Startup fails if: `DATABASE_URL` missing or SQLite; `APP_SECRET_KEY` default/short; `SUPABASE_URL` or
 `SUPABASE_ANON_KEY` missing; no JWT algorithms; `DEBUG=true`; `CORS_ORIGINS` contains `*`;
@@ -26,7 +32,8 @@ Secrets are typed as `SecretStr` (never printed in reprs/logs).
 ## Groups
 - **Database**: `DATABASE_URL` (`postgresql://…?sslmode=require`; normalised to the psycopg driver),
   pool settings, `DB_USE_PGBOUNCER` for the Supabase transaction pooler.
-- **Auth / JWT**: `SUPABASE_JWT_ALGORITHMS` (asymmetric list; HS256 added only when `SUPABASE_JWT_SECRET` set),
+- **Auth / JWT**: `SUPABASE_JWT_ALGORITHMS` (HS256 accepted only when listed here AND `SUPABASE_JWT_SECRET` is set —
+  a leftover legacy secret alone never enables it),
   `SUPABASE_JWKS_URL`, `SUPABASE_JWT_ISSUER`, `SUPABASE_JWT_AUDIENCE`, `JWKS_CACHE_TTL_SECONDS`, `JWT_LEEWAY_SECONDS`.
 - **Storage / uploads**: `STORAGE_BACKEND`, bucket names, `SIGNED_URL_TTL_SECONDS`, size limits.
 - **JSearch**: key/host/base URL/paths, timeouts, retries, cache TTLs, global call budget.

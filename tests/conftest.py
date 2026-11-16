@@ -17,6 +17,14 @@ import os
 # Configure the environment BEFORE the application is imported.
 os.environ.update(
     {
+        # Never load the developer's real .env during tests.
+        "SHARKHIRE_ENV_FILE": "",
+        # Explicitly pin everything that the real .env might otherwise influence.
+        "SUPABASE_JWT_ISSUER": "",
+        "SUPABASE_JWKS_URL": "",
+        "SUPABASE_JWT_AUDIENCE": "authenticated",
+        "AUTH_EMAIL_REDIRECT_URL": "",
+        "AUTH_PASSWORD_RESET_REDIRECT_URL": "",
         "APP_ENV": "testing",
         "DEBUG": "false",
         "DATABASE_URL": "sqlite+aiosqlite://",
@@ -58,7 +66,7 @@ from app.core.security import jwks_cache
 from app.models import Base
 from app.models.user import User, UserRole
 from app.services.http import close_http_clients, set_http_client
-from app.services.jsearch.client import outbound_budget
+from app.services.jsearch.client import outbound_budget, plan_quota
 
 SUPABASE = "https://test-project.supabase.co"
 ISSUER = f"{SUPABASE}/auth/v1"
@@ -138,6 +146,7 @@ def _reset_state(tmp_path: Any) -> Any:
     settings.LOCAL_STORAGE_DIR = str(tmp_path / "storage")
     limiter.reset()
     outbound_budget.reset()
+    plan_quota.reset()
     jwks_cache.set_keys({"keys": [_PUBLIC_JWK]})
     yield
     for key, value in original.items():

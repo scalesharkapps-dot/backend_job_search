@@ -6,10 +6,11 @@ Nothing in this module may contain a real credential.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "testing", "staging", "production"]
@@ -26,7 +27,9 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # SHARKHIRE_ENV_FILE overrides the dotenv path; an empty value disables it (the test suite does
+        # this so it never reads a developer's real credentials).
+        env_file=os.environ.get("SHARKHIRE_ENV_FILE", ".env") or None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -72,7 +75,8 @@ class Settings(BaseSettings):
     SUPABASE_JWT_ISSUER: str | None = None  # default: {SUPABASE_URL}/auth/v1
     SUPABASE_JWT_AUDIENCE: str | None = "authenticated"
     SUPABASE_JWKS_URL: str | None = None  # default: {SUPABASE_URL}/auth/v1/.well-known/jwks.json
-    # Asymmetric algorithms accepted from the JWKS. HS256 is added only when a secret is set.
+    # Accepted algorithms. ES256/RS256 are verified via JWKS. HS256 is accepted only when listed here
+    # explicitly AND SUPABASE_JWT_SECRET is set (legacy projects only).
     SUPABASE_JWT_ALGORITHMS: str = "ES256,RS256"
     JWKS_CACHE_TTL_SECONDS: int = 600
     JWT_LEEWAY_SECONDS: int = 10
@@ -112,6 +116,11 @@ class Settings(BaseSettings):
     JSEARCH_MAX_NUM_PAGES: int = 3
     # Process-wide cap on outbound JSearch calls (protects the RapidAPI subscription).
     JSEARCH_GLOBAL_CALLS_PER_MINUTE: int = 30
+    # Plan quota guard: RapidAPI reports the remaining requests of the billing period in
+    # x-ratelimit-requests-remaining. Calls stop when that many (or fewer) remain, so the
+    # quota can never be fully drained by a burst. 0 disables the reserve.
+    JSEARCH_QUOTA_RESERVE: int = 5
+    JSEARCH_QUOTA_WARN_BELOW: int = 25
     # Used only when no country is given and none can be inferred from the location.
     # Empty = let the provider decide (searches are NOT restricted to Pakistan by default).
     JSEARCH_DEFAULT_COUNTRY: str = ""
@@ -146,6 +155,20 @@ class Settings(BaseSettings):
     def _prefix(cls, value: str) -> str:
         value = "/" + value.strip("/")
         return value
+
+    @model_validator(mode="after")
+    def _database_url_scheme(self) -> Settings:
+        # Model-level so that Pydantic's error shows the masked SecretStr, never the password.
+        if self.DATABASE_URL is None:
+            return self
+        url = self.DATABASE_URL.get_secret_value().strip()
+        if not url:
+            self.DATABASE_URL = None
+            return self
+        if not url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://", "sqlite://", "sqlite+aiosqlite://")):
+            raise ValueError("DATABASE_URL must start with postgresql:// (e.g. postgresql://user:password@host:5432/postgres)")
+        self.DATABASE_URL = SecretStr(url)
+        return self
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -193,10 +216,13 @@ class Settings(BaseSettings):
 
     @property
     def jwt_algorithms(self) -> list[str]:
-        algs = [a.strip().upper() for a in self.SUPABASE_JWT_ALGORITHMS.split(",") if a.strip()]
-        # Never accept "none"; HMAC only when a secret is configured.
-        algs = [a for a in algs if a not in {"NONE", "HS256", "HS384", "HS512"}]
-        if self.SUPABASE_JWT_SECRET is not None and self.SUPABASE_JWT_SECRET.get_secret_value():
+        requested = [a.strip().upper() for a in self.SUPABASE_JWT_ALGORITHMS.split(",") if a.strip()]
+        # Never accept "none" or HS384/HS512. HS256 (legacy shared secret) requires BOTH an explicit
+        # "HS256" entry AND a configured secret: a leftover legacy secret alone must not let anyone
+        # holding it mint tokens for a project that signs with asymmetric keys.
+        algs = [a for a in requested if a not in {"NONE", "HS256", "HS384", "HS512"}]
+        has_secret = self.SUPABASE_JWT_SECRET is not None and bool(self.SUPABASE_JWT_SECRET.get_secret_value())
+        if "HS256" in requested and has_secret:
             algs.append("HS256")
         return algs
 
@@ -249,7 +275,27 @@ class Settings(BaseSettings):
         return problems
 
 
+class SettingsError(RuntimeError):
+    """Invalid configuration. The message never contains configuration values."""
+
+
+def load_settings(**overrides: object) -> Settings:
+    """Build Settings, converting validation errors into a secret-free message.
+
+    Pydantic's own error text embeds the (truncated) raw input, which could expose
+    credentials in startup logs.
+    """
+    try:
+        return Settings(**overrides)  # type: ignore[arg-type]
+    except ValidationError as exc:
+        lines = []
+        for err in exc.errors(include_input=False, include_url=False):
+            field = ".".join(str(p) for p in err.get("loc", ())) or "settings"
+            lines.append(f"{field}: {err.get('msg', 'invalid value')}")
+        raise SettingsError("Invalid configuration:\n  - " + "\n  - ".join(lines)) from None
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Return the cached settings instance."""
-    return Settings()
+    return load_settings()

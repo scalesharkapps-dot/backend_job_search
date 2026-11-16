@@ -224,3 +224,44 @@ async def test_access_log_has_no_query_string(client, caplog):
 
 class _Unused(BaseModel):
     pass
+
+
+@pytest.mark.unit
+def test_database_url_without_scheme_rejected_without_leaking():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None, DATABASE_URL="//postgres:topsecretpw@db.example.supabase.co:5432/postgres")  # secret-scan: ignore
+    assert "postgresql://" in str(exc.value)
+    assert "topsecretpw" not in str(exc.value)
+
+
+@pytest.mark.unit
+def test_every_table_is_covered_by_rls_lockdown():
+    """New tables must be added to an RLS/privilege lockdown migration (Supabase Data API exposure)."""
+    import importlib.util
+    import pathlib
+
+    from app.models import Base
+
+    path = next(pathlib.Path("alembic/versions").glob("*_0007_security_rls_lockdown.py"))
+    spec = importlib.util.spec_from_file_location("m0007", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    missing = set(Base.metadata.tables) - set(module.TABLES)
+    assert not missing, f"Tables without RLS lockdown: {sorted(missing)}"
+
+
+@pytest.mark.unit
+def test_settings_errors_never_include_values():
+    from app.core.config import SettingsError, load_settings
+
+    for kwargs, expected in [
+        ({"DATABASE_URL": "//postgres:topsecretpw@db.example.supabase.co/postgres"}, "DATABASE_URL must start with postgresql://"),  # secret-scan: ignore
+        ({"LOG_LEVEL": "LOUD"}, "LOG_LEVEL"),
+    ]:
+        with pytest.raises(SettingsError) as exc:
+            load_settings(_env_file=None, SUPABASE_SERVICE_ROLE_KEY="sb_secret_shouldneverappear", **kwargs)
+        text = str(exc.value)
+        assert expected in text
+        assert "topsecretpw" not in text and "sb_secret_shouldneverappear" not in text and "input_value" not in text

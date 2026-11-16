@@ -21,6 +21,17 @@ This is an engineering security review with automated regression tests — **not
 - Employers see only applicants to their own jobs, only the CV attached to that application, via short-lived signed
   URLs, with audit logging. Candidate private notes are never exposed to employers and vice versa.
 
+## Supabase Data API & Row Level Security
+The Data API is **intentionally disabled** on the SharkHire project (FastAPI connects directly to PostgreSQL);
+`/rest/v1` errors are expected. RLS is therefore verified **through PostgreSQL** (`scripts/verify_supabase_db.py`,
+role switching to `anon`/`authenticated`), not over REST — see [SUPABASE_SETUP.md](SUPABASE_SETUP.md).
+Background — if the Data API were enabled, Supabase would publish the `public` schema through PostgREST to the `anon`/`authenticated` roles, using keys that ship in
+client apps. Without RLS, the app's tables would be readable/writable by anyone holding the publishable key (verified
+locally: `anon` could read `users` before migration 0007). Migration **0007** enables RLS with no policies (deny-all)
+and revokes all privileges from those roles on every SharkHire table; the backend connects as the table owner
+(`postgres`), which bypasses RLS, and enforces authorization itself. `tests/test_foundation.py` fails if a new table
+is not covered. If you ever connect the backend with a non-owner role, add explicit grants for that role.
+
 ## Input & files
 - Pydantic v2 validation on all inputs; strict enums; URL fields allow only `http(s)` with a host (blocks
   `javascript:`, `data:`, credentials in URLs); LIKE wildcards escaped; SQLAlchemy parameterised queries only.
@@ -48,8 +59,7 @@ FastAPI, PyJWT, python-multipart, Pillow and pytest (the initial pins had known 
 
 ## Secrets
 `.env` git-ignored; `.env.example` contains no values; `scripts/check_secrets.py` scans for JWTs, private keys,
-DB passwords, RapidAPI/Supabase keys (CI step). Note: the git repository currently in use is rooted at the user's
-Desktop folder, not at `backend_job_search` — see the project memory before committing.
+DB passwords, RapidAPI/Supabase keys (CI step).
 
 ## Operations runbook
 | Symptom | Check |
@@ -57,6 +67,6 @@ Desktop folder, not at `backend_job_search` — see the project memory before co
 | `/api/v1/health/database` 503 | DB credentials/SSL, Supabase status, pool exhaustion (`DB_POOL_SIZE`) |
 | many `401 invalid_token` | wrong `SUPABASE_URL`/issuer/audience, signing key rotated (JWKS refetches automatically) |
 | `503 job_search_unavailable` | RapidAPI key/subscription (401/403 logged as "authentication/subscription failure") |
-| `429 job_search_rate_limited` | provider quota or `JSEARCH_GLOBAL_CALLS_PER_MINUTE` |
+| `429 job_search_rate_limited` | provider quota, quota reserve (`JSEARCH_QUOTA_RESERVE`, see `jsearch_quota` on `GET /admin/dashboard`) or `JSEARCH_GLOBAL_CALLS_PER_MINUTE` |
 | `503 storage_unavailable` | Supabase Storage status, service-role key, bucket names |
 | expired jobs still listed to employers | run `python -m app.scripts.maintenance` (also runs lazily) |

@@ -124,6 +124,8 @@ class SupabaseAuthClient:
             raise AuthenticationError(
                 "Please verify your email address before signing in.", code="email_not_confirmed"
             )
+        if code == "user_banned" or "user is banned" in message:
+            raise AuthenticationError("This account has been suspended.", code="account_suspended")
         if code in {"invalid_credentials", "invalid_grant"} or "invalid login" in message:
             raise AuthenticationError("Invalid email or password.", code="invalid_credentials")
         if code in {"refresh_token_not_found", "refresh_token_already_used", "session_not_found"}:

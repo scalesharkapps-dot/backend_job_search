@@ -23,13 +23,23 @@ Flutter (Android/iOS) ──HTTPS/JSON──▶ FastAPI (/api/v1)
                      Supabase PostgreSQL · Supabase Auth · Supabase Storage · JSearch (RapidAPI)
 ```
 
+### Supabase integration model
+- FastAPI connects **directly to PostgreSQL** through the Supabase **Session pooler** (`DATABASE_URL`).
+- **Supabase Auth** and **Supabase Storage** are separate integrations called by the backend; tokens are verified
+  locally with ES256 via JWKS.
+- The **Supabase Data API (PostgREST) is intentionally disabled** — `/rest/v1` errors such as `PGRST002` are expected
+  and are not a backend fault. Flutter never queries the database or receives server credentials.
+- RLS (migration 0007) is verified **through PostgreSQL** (`python scripts/verify_supabase_db.py`), not via REST.
+  Details: [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md).
+
 ## Project structure
 ```
 app/            application package (main.py, server.py, preflight.py, core/, api/, models/, schemas/, services/, scripts/)
-alembic/        migrations 0001–0006
+alembic/        migrations 0001–0008 (0007 = RLS + Data API lockdown, 0008 = no default API-role grants)
 tests/          pytest suite (unit + mocked integration; opt-in real-service tests)
 docs/           API, Flutter integration, deployment, security, backup guides
-scripts/        load_test.py, export_endpoints.py, check_secrets.py
+scripts/        load_test.py, export_endpoints.py, check_secrets.py, verify_supabase_db.py,
+                e2e_supabase_audit.py, e2e_cleanup.py
 Dockerfile      production image (non-root, preflight, healthcheck)
 .github/workflows/ci.yml
 ```
@@ -81,10 +91,12 @@ $env:TEST_DATABASE_URL="postgresql://postgres:pw@localhost:55432/db"; .venv\Scri
 Local PostgreSQL for tests: `docker run -d --name sharkhire-pg-test -e POSTGRES_PASSWORD=localtestpw -e POSTGRES_DB=sharkhire_test -p 55432:5432 postgres:16-alpine`.
 
 ## Documentation
+- **Start here (Flutter / handover): [docs/BACKEND_HANDOVER_REPORT.md](docs/BACKEND_HANDOVER_REPORT.md)**
 - API: [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md), [docs/API_ENDPOINTS.md](docs/API_ENDPOINTS.md)
 - Flutter: [docs/FLUTTER_FINAL_BACKEND_INTEGRATION.md](docs/FLUTTER_FINAL_BACKEND_INTEGRATION.md) (index of all guides)
 - Recommendations: [docs/RECOMMENDATION_SCORING.md](docs/RECOMMENDATION_SCORING.md)
 - Admin: [docs/ADMIN_API_DOCUMENTATION.md](docs/ADMIN_API_DOCUMENTATION.md)
+- Supabase: [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md)
 - Operations: [deployment](docs/PRODUCTION_DEPLOYMENT.md), [environment](docs/ENVIRONMENT_CONFIGURATION.md),
   [backups](docs/DATABASE_BACKUP_AND_RECOVERY.md), [security](docs/SECURITY_AND_OPERATIONS.md)
 

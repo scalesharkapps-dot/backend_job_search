@@ -75,6 +75,58 @@ class OutboundBudget:
 outbound_budget = OutboundBudget()
 
 
+class PlanQuota:
+    """Last plan-quota figures reported by RapidAPI (process-local).
+
+    ``x-ratelimit-requests-remaining`` / ``-reset`` (seconds until the period resets)
+    are read from every provider response.
+    """
+
+    def __init__(self) -> None:
+        self.limit: int | None = None
+        self.remaining: int | None = None
+        self.reset_at: float | None = None  # monotonic time
+        self._lock = threading.Lock()
+
+    def update(self, headers: httpx.Headers, warn_below: int) -> None:
+        def _int(name: str) -> int | None:
+            value = headers.get(name)
+            return int(value) if value is not None and value.strip().isdigit() else None
+
+        remaining = _int("x-ratelimit-requests-remaining")
+        if remaining is None:
+            return
+        reset = _int("x-ratelimit-requests-reset")
+        with self._lock:
+            self.remaining = remaining
+            self.limit = _int("x-ratelimit-requests-limit") or self.limit
+            self.reset_at = time.monotonic() + reset if reset is not None else None
+        if remaining <= warn_below:
+            logger.warning("JSearch plan quota low: %s requests remaining in the current period", remaining)
+
+    def blocked_for(self, reserve: int) -> int:
+        """Seconds to wait when the reserve is reached (0 = calls allowed)."""
+        with self._lock:
+            if reserve <= 0 or self.remaining is None or self.remaining > reserve:
+                return 0
+            if self.reset_at is not None and time.monotonic() >= self.reset_at:
+                self.remaining = None  # new billing period: trust the next response again
+                return 0
+            return max(1, int(self.reset_at - time.monotonic())) if self.reset_at else 3600
+
+    def snapshot(self) -> dict[str, int | None]:
+        with self._lock:
+            resets_in = int(self.reset_at - time.monotonic()) if self.reset_at else None
+            return {"limit": self.limit, "remaining": self.remaining, "resets_in_seconds": resets_in}
+
+    def reset(self) -> None:
+        with self._lock:
+            self.limit = self.remaining = self.reset_at = None
+
+
+plan_quota = PlanQuota()
+
+
 @dataclass
 class SearchPage:
     jobs: list[dict[str, Any]]
@@ -102,6 +154,13 @@ class JSearchClient:
 
     async def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         headers = self._headers()
+        blocked = plan_quota.blocked_for(self.settings.JSEARCH_QUOTA_RESERVE)
+        if blocked:
+            logger.warning("JSearch plan quota reserve reached; not calling the provider")
+            raise JSearchRateLimited(
+                "Live job search has reached its quota for this period. Please try again later.",
+                retry_after=min(blocked, 86400),
+            )
         wait = outbound_budget.acquire(self.settings.JSEARCH_GLOBAL_CALLS_PER_MINUTE)
         if wait:
             logger.warning("JSearch outbound budget exhausted")
@@ -125,6 +184,7 @@ class JSearchClient:
                 logger.warning("JSearch %s attempt %d failed: %s", path, attempt + 1, type(exc).__name__)
             else:
                 status = response.status_code
+                plan_quota.update(response.headers, self.settings.JSEARCH_QUOTA_WARN_BELOW)
                 if status == 200:
                     try:
                         payload = response.json()

@@ -27,6 +27,7 @@ from app.models.employer import (
 from app.models.job import Job, JobSource, PostingStatus
 from app.models.user import User, UserRole
 from app.services import audit
+from app.services.jsearch.client import plan_quota
 from app.services.supabase_auth import SupabaseAuthClient
 
 logger = logging.getLogger(__name__)
@@ -337,7 +338,9 @@ async def dashboard(db: AsyncSession) -> dict[str, Any]:
         "internal_applications": await count(select(func.count()).select_from(Application).where(Application.employer_status.is_not(None))),
         "pending_reports": await count(select(func.count()).select_from(Report).where(
             Report.status.in_([ReportStatus.PENDING, ReportStatus.UNDER_REVIEW]))),
+        "jsearch_quota": plan_quota.snapshot(),
         "definitions": {
+            "jsearch_quota": "Last RapidAPI plan quota seen by this server process (null until the first provider call).",
             "active_users": "Users whose account is not suspended in SharkHire.",
             "published_jobs": "SharkHire listings in 'published' state (expired-by-deadline listings may still be counted until marked expired).",
             "total_applications": "All application records, including job seekers' personal tracking of external jobs.",

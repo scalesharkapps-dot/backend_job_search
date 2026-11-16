@@ -23,22 +23,31 @@ of problems) when these are missing (`python -m app.preflight`).
 1. **Auth → Providers**: enable Email. Decide whether email confirmation is required.
 2. **Auth → URL Configuration**: add the app deep links (`sharkhire://auth/callback`, `sharkhire://auth/reset-password`)
    to Redirect URLs; set the same values in `AUTH_EMAIL_REDIRECT_URL` / `AUTH_PASSWORD_RESET_REDIRECT_URL`.
-3. **JWT signing keys**: prefer asymmetric (ES256/RS256) keys — the API reads the JWKS automatically. For legacy HS256
-   projects set `SUPABASE_JWT_SECRET` (server only).
-4. **Database → Connection string**: use the session pooler or direct connection (port 5432) with `sslmode=require`.
+3. **JWT signing keys**: prefer asymmetric (ES256/RS256) keys — the API reads the JWKS automatically. The current
+   SharkHire project signs with **ES256** (verified 2026-11-16). Only legacy HS256 projects need `SUPABASE_JWT_SECRET`
+   **and** `HS256` in `SUPABASE_JWT_ALGORITHMS`.
+4. **Connect → Session pooler**: copy that URI (IPv4, port 5432, `postgresql://postgres.<ref>:…@aws-…pooler.supabase.com`)
+   and add `?sslmode=require`. The direct host `db.<ref>.supabase.co` is IPv6-only and fails on most IPv4 hosts.
    With the transaction pooler (6543) also set `DB_USE_PGBOUNCER=true`.
+5. **Data API**: **intentionally disabled** on the SharkHire project — SharkHire never uses PostgREST, so `/rest/v1`
+   errors (e.g. `PGRST002`) are expected; do not enable it or change Exposed schemas. Migration 0007 still enables
+   RLS (no policies) and revokes `anon`/`authenticated` privileges as defence in depth. See [SUPABASE_SETUP.md](SUPABASE_SETUP.md).
 
 ## 5. Database migrations
 Run before starting new app versions (one-off job using the same image):
 ```bash
 docker run --rm --env-file prod.env sharkhire-api:<tag> alembic upgrade head
 ```
-Take a backup first ([DATABASE_BACKUP_AND_RECOVERY.md](DATABASE_BACKUP_AND_RECOVERY.md)). Migrations 0001–0006 were
-verified (upgrade → `alembic check` → downgrade → upgrade) on PostgreSQL 16 locally — **not yet on the Supabase
-instance**. The app tables live in `public`; Supabase's `auth` schema is never modified.
+Take a backup first ([DATABASE_BACKUP_AND_RECOVERY.md](DATABASE_BACKUP_AND_RECOVERY.md)). Migrations 0001–0008 were
+verified (upgrade → `alembic check` → downgrade → upgrade) on PostgreSQL 16 locally, and **applied to the SharkHire
+Supabase database on 2026-11-16 (0008 the same day)** (PostgreSQL 17.11 via the Session pooler; `alembic check` clean). Verify any
+database with `python scripts/verify_supabase_db.py` (structure, RLS, API-role privileges, CRUD with its own rows).
+Never run the pytest suite with `TEST_DATABASE_URL` pointing at Supabase — it drops and recreates all tables.
+Recommended: enable **Database → SSL configuration → Enforce SSL** (the pooler currently also accepts non-TLS clients). The app tables live in `public`; Supabase's `auth` schema is never modified.
 
 ## 6. Supabase Storage 🔑
-Create two **private** buckets: `cvs` and `media` (names configurable). Do not make them public. The API uploads with
+Status: both buckets were **created on the SharkHire project on 2026-11-16** (private; `cvs` 5 MB PDF/DOCX,
+`media` 2 MB JPEG/PNG/WebP) and verified end-to-end. For a new project: create two **private** buckets: `cvs` and `media` (names configurable). Do not make them public. The API uploads with
 the service-role key and serves files only through short-lived signed URLs (`SIGNED_URL_TTL_SECONDS`, default 300).
 Recommended bucket limits: `cvs` 5 MB, `application/pdf` + DOCX MIME; `media` 2 MB, image/jpeg|png|webp.
 

@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import sys
 
-from app.core.config import get_settings
+from app.core.config import SettingsError, get_settings
 
 
 def main() -> int:
-    problems = get_settings().validate_production()
+    try:
+        problems = get_settings().validate_production()
+    except SettingsError as exc:
+        print(f"SharkHire {exc}", file=sys.stderr)
+        return 1
     if problems:
         print("SharkHire configuration error:", file=sys.stderr)
         for problem in problems:

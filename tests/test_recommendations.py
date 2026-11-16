@@ -440,3 +440,11 @@ async def test_concurrent_recommendations_same_user(client, db, user_factory):
     assert all(r.status_code == 200 for r in results), [r.text for r in results if r.status_code != 200]
     hist = (await client.get("/api/v1/recommendations/history?page_size=50", headers=headers)).json()["data"]
     assert hist["pagination"]["total"] == 5  # upsert never duplicates
+
+
+@pytest.mark.unit
+def test_explanation_wording_for_no_minimum_experience():
+    req = derive_requirements(title="Junior Python Developer", description="Python required.", highlights={})
+    r = score_components(cand(), req, facts(title="Junior Python Developer"), WEIGHTS)
+    assert "no minimum experience required" in " ".join(r.reasons)
+    assert "0+ years" not in " ".join(r.reasons)

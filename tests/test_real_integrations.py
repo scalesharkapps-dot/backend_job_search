@@ -77,3 +77,7 @@ async def test_real_jsearch_search_pakistan_and_international(real_http):
         normalized = [n for n in (normalize_job(j) for j in page.jobs) if n]
         # The provider may legitimately return zero jobs; when it returns any they must normalise.
         assert len(normalized) == len([j for j in page.jobs if j.get("job_title")])
+    from app.services.jsearch.client import plan_quota
+
+    quota = plan_quota.snapshot()
+    assert quota["remaining"] is not None and quota["limit"], "RapidAPI quota headers were not read"
