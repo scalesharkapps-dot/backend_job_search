@@ -265,3 +265,21 @@ def test_settings_errors_never_include_values():
         text = str(exc.value)
         assert expected in text
         assert "topsecretpw" not in text and "sb_secret_shouldneverappear" not in text and "input_value" not in text
+
+
+@pytest.mark.unit
+def test_no_source_file_is_git_ignored():
+    """Regression: an unanchored "storage/" rule once kept app/services/storage/ out of the repository,
+    so CI and Docker builds could not import the app. Every source file must be committable."""
+    import pathlib
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None or not pathlib.Path(".git").exists():
+        pytest.skip("not a git checkout")
+    sources = [str(p) for d in ("app", "alembic", "scripts", "tests") for p in pathlib.Path(d).rglob("*.py")
+               if "__pycache__" not in p.parts]
+    # Fixed command and repository-relative paths only (no external input).
+    result = subprocess.run([git, "check-ignore", "--no-index", *sources], capture_output=True, text=True, check=False)  # noqa: S603
+    assert result.stdout.strip() == "", f"git ignores source files:\n{result.stdout}"

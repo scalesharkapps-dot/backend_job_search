@@ -16,8 +16,9 @@ htmlcov/
 *.egg-info/
 build/
 dist/
-# Local data (never commit uploaded CVs or local databases)
-storage/
+# Local data (never commit uploaded CVs or local databases).
+# Anchored to the repo root: an unanchored "storage/" also ignored app/services/storage/ (source code).
+/storage/
 *.db
 *.sqlite
 *.sqlite3
