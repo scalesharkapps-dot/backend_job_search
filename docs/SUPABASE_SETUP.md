@@ -69,9 +69,40 @@ Buckets (created 2026-11-16): `cvs` private, 5 MB, PDF/DOCX only; `media` privat
 Objects are stored under server-generated paths (`cvs/<user-uuid>/<random>.pdf`) and served via signed URLs
 (`SIGNED_URL_TTL_SECONDS`, default 300).
 
+### Storage configuration checklist (CV uploads)
+CV uploads fail with `503 storage_not_configured` ("File uploads aren't available right now because the server's
+file storage isn't set up") whenever the **running server** has `STORAGE_BACKEND=supabase` but no
+`SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY`. A local `.env` is never shipped (git- and docker-ignored), so these
+must be set in the hosting provider's environment variables:
+
+| Variable | Value |
+|---|---|
+| `STORAGE_BACKEND` | `supabase` |
+| `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Dashboard > Project Settings > API Keys > **secret** key (`sb_secret_...`) or legacy `service_role` JWT. **Not** the publishable/anon key (that gives `storage_auth_failed`). Server-side only. |
+| `SUPABASE_STORAGE_CV_BUCKET` | `cvs` (existing bucket). Any private bucket name works, e.g. `user-cvs`, but changing it on a live system orphans files already stored in the old bucket. |
+| `SUPABASE_STORAGE_MEDIA_BUCKET` | `media` |
+| `CV_MAX_FILE_SIZE_MB` | `5` |
+
+Create / verify buckets (never modifies or empties existing buckets):
+```bash
+python scripts/setup_storage.py              # read-only check
+python scripts/setup_storage.py --create     # create missing buckets as PRIVATE (5 MB PDF/DOCX; 2 MB images)
+python scripts/setup_storage.py --roundtrip  # upload/sign/download/delete one test object
+```
+Manual alternative: Dashboard > Storage > New bucket > name `cvs`, **Public bucket OFF**, file size limit 5 MB,
+allowed MIME types `application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document`.
+No storage RLS policies are needed (and none should be added for `anon`/`authenticated`): only the backend accesses
+objects, with the secret key; users get time-limited signed URLs for their own files only.
+
+On a deployed server: `GET /api/v1/health/storage` returns `200 {"storage": "connected"}` or `503` with
+`storage_not_configured | storage_bucket_missing | storage_auth_failed | storage_bucket_public | storage_unavailable`.
+The server also logs an ERROR at startup naming (never printing) any missing variable.
+
 ## Verification tools
 | Command | What it checks | Writes |
 |---|---|---|
 | `python scripts/verify_supabase_db.py` | connectivity, TLS, revision, schema vs models, RLS, API-role privileges, CRUD/FK/rollback | own marked rows, removed |
 | `python scripts/e2e_supabase_audit.py <api> <db_url>` | all 8 phases over HTTP with real Auth/Storage | throwaway users/rows/files, removed by `scripts/e2e_cleanup.py` |
+| `python scripts/setup_storage.py [--create] [--roundtrip]` | storage key, buckets exist and are private, optional round-trip | `--create`: missing buckets; `--roundtrip`: one test object, removed |
 | `python -m pytest` | full suite (SQLite / local PostgreSQL) | **never point `TEST_DATABASE_URL` at Supabase** — it drops tables |

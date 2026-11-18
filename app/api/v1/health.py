@@ -85,3 +85,45 @@ async def database_health() -> JSONResponse:
     return JSONResponse(
         status_code=200, content={"status": "ok", "database": "connected", "timestamp": now}
     )
+
+
+class StorageHealthResponse(BaseModel):
+    status: str
+    backend: str
+    storage: str
+    bucket: str
+    timestamp: datetime
+
+
+@router.get(
+    "/health/storage",
+    response_model=StorageHealthResponse,
+    summary="File storage readiness (CV uploads)",
+    responses={503: {"model": StorageHealthResponse, "description": "Storage misconfigured or unreachable"}},
+)
+async def storage_health() -> JSONResponse:
+    """Check that the configured storage backend can be used for CV uploads.
+
+    For Supabase this verifies the server key and that the CV bucket exists and is
+    PRIVATE (read-only; nothing is written). `storage` is `connected` or an error
+    code such as `storage_not_configured`, `storage_bucket_missing`,
+    `storage_auth_failed`, `storage_bucket_public` or `storage_unavailable`.
+    No configuration values are returned.
+    """
+    from app.services.storage import get_storage
+
+    settings = get_settings()
+    bucket = settings.SUPABASE_STORAGE_CV_BUCKET
+    body: dict[str, object] = {
+        "backend": settings.STORAGE_BACKEND,
+        "bucket": bucket,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    try:
+        await get_storage().check(bucket)
+    except AppError as exc:
+        return JSONResponse(status_code=503, content={**body, "status": "unavailable", "storage": exc.code})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Storage health check failed: %s", type(exc).__name__)
+        return JSONResponse(status_code=503, content={**body, "status": "unavailable", "storage": "unreachable"})
+    return JSONResponse(status_code=200, content={**body, "status": "ok", "storage": "connected"})

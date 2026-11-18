@@ -59,4 +59,26 @@ certifications. Nothing is invented: unknown → `null`/`[]`. `extraction_metada
 
 ### Errors
 `413 file_too_large`, `415 unsupported_file_type | mime_mismatch | invalid_file_signature | macro_not_allowed`,
-`422 empty_file | corrupted_file`, `409 duplicate_cv | cv_limit_reached`, `503 storage_unavailable`.
+`422 empty_file | corrupted_file`, `409 duplicate_cv | cv_limit_reached`,
+`503 storage_not_configured | storage_bucket_missing | storage_auth_failed | storage_unavailable`
+(all 503 storage codes are server-side configuration/outage problems; the app should show a generic
+"uploads unavailable, try again later" message — check `GET /api/v1/health/storage`).
+
+### Upload response (additive fields, 2026-11-19)
+`POST /cv/upload` still returns the CV metadata and `skills_found`, plus:
+* `extracted_data` — `{skills, experience, education, qualifications, job_titles, years_of_experience,
+  is_user_confirmed}` for the review screen; `null` when `processing_status` is not `completed`.
+  `qualifications` = certifications/licences found in the CV. Nothing is applied to the profile until the
+  user confirms (`PATCH /cv/{id}/extracted-data`) / applies it (`POST /cv/{id}/apply-to-profile`).
+* `replaced_cv_id` — set when `?replace=true` was used and the previous primary CV was deleted.
+
+`?replace=true` (query parameter): the new CV becomes primary and the previous primary CV (file + data) is
+deleted **after** the new one is stored and recorded. If that deletion fails the new CV is still primary and the
+old one stays listed (`replaced_cv_id: null`). Allowed even when the user is at `CV_MAX_FILES_PER_USER`.
+
+### Current-CV convenience endpoints
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/v1/cv/me` | `{cv, extracted_data}` for the primary CV, or both `null` when none |
+| GET | `/api/v1/cv/status` | `{has_cv, cv_id, processing_status, extraction_error, is_reviewed, total_cvs, uploaded_at, processed_at}` |
+| DELETE | `/api/v1/cv/me` | deletes the primary CV (404 `cv_not_found` when none); newest remaining CV becomes primary |

@@ -5,18 +5,20 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from app.api.deps import CurrentUser, DBSession
 from app.core.config import get_settings
-from app.core.exceptions import ValidationAppError
+from app.core.exceptions import NotFoundError, ValidationAppError
 from app.core.rate_limit import rate_limit
 from app.core.responses import ERROR_RESPONSES, ApiResponse, ok
 from app.models.profile import CVProcessingStatus
 from app.schemas.profile import (
     ApplyToProfileRequest,
     CVDownloadOut,
+    CVMeOut,
     CVOut,
+    CVStatusOut,
     CVUploadOut,
     ExtractedDataOut,
     ExtractedDataUpdate,
@@ -50,23 +52,78 @@ async def upload_cv(
     db: DBSession,
     storage: Storage,
     file: Annotated[UploadFile, File(description="PDF or DOCX, max CV_MAX_FILE_SIZE_MB")],
+    replace: Annotated[
+        bool, Query(description="Make this the primary CV and delete the previous primary CV")
+    ] = False,
 ) -> dict[str, Any]:
     """Validates extension, MIME type and actual file signature, stores the file
     privately, then extracts text and structured data synchronously.
 
     `processing_status` is one of: completed, no_text, ocr_required, failed.
-    The first CV uploaded becomes the primary CV.
+    The first CV uploaded becomes the primary CV. `extracted_data` (skills,
+    experience, education, qualifications, job_titles) is returned for user review
+    when processing completed; it is not applied to the profile until the user
+    confirms it (`PATCH /cv/{id}/extracted-data`, `POST /cv/{id}/apply-to-profile`).
+    If extraction fails the file and record are kept (`processing_status=failed`)
+    and the existing profile is never modified.
     """
     validated = await validate_cv_upload(file, get_settings().cv_max_bytes)
-    cv, skills_found = await cv_service.upload_cv(db, user, storage, validated)
+    user_id = user.id  # captured up front: a rollback inside upload_cv expires ORM objects
+    cv, skills_found, replaced_id = await cv_service.upload_cv(db, user, storage, validated, replace=replace)
+    cv = await cv_service.get_user_cv(db, user_id, cv.id, with_data=True)
     data = CVOut.model_validate(cv).model_dump()
     data["skills_found"] = skills_found
-    return ok(data, "CV uploaded successfully")
+    data["extracted_data"] = cv_service.summary_payload(cv)
+    data["replaced_cv_id"] = replaced_id
+    message = "CV uploaded successfully" if cv.processing_status.value == "completed" else (
+        "CV uploaded, but its information could not be extracted automatically"
+    )
+    return ok(data, message)
 
 
 @router.get("", response_model=ApiResponse[list[CVOut]], summary="List my CVs")
 async def list_cvs(user: CurrentUser, db: DBSession) -> dict[str, Any]:
     return ok([CVOut.model_validate(c) for c in await cv_service.list_user_cvs(db, user.id)])
+
+
+# ---- "current CV" convenience routes: declared before /{cv_id} so "me"/"status" are not parsed as ids ----
+@router.get("/me", response_model=ApiResponse[CVMeOut], summary="Get my current (primary) CV and its extracted data")
+async def get_my_cv(user: CurrentUser, db: DBSession) -> dict[str, Any]:
+    cv = await cv_service.get_primary_cv(db, user.id)
+    if cv is None:
+        return ok({"cv": None, "extracted_data": None}, "No CV uploaded yet")
+    return ok({"cv": CVOut.model_validate(cv), "extracted_data": cv_service.summary_payload(cv)})
+
+
+@router.get("/status", response_model=ApiResponse[CVStatusOut], summary="Get my CV upload/processing status")
+async def get_my_cv_status(user: CurrentUser, db: DBSession) -> dict[str, Any]:
+    cvs = await cv_service.list_user_cvs(db, user.id)
+    cv = await cv_service.get_primary_cv(db, user.id)
+    if cv is None:
+        return ok({"has_cv": False, "total_cvs": 0})
+    return ok(
+        {
+            "has_cv": True,
+            "cv_id": cv.id,
+            "processing_status": cv.processing_status,
+            "extraction_error": cv.extraction_error,
+            "is_reviewed": bool(cv.extracted and cv.extracted.is_user_confirmed),
+            "total_cvs": len(cvs),
+            "uploaded_at": cv.created_at,
+            "processed_at": cv.processed_at,
+        }
+    )
+
+
+@router.delete("/me", response_model=ApiResponse[None], summary="Delete my current (primary) CV")
+async def delete_my_cv(user: CurrentUser, db: DBSession, storage: Storage) -> dict[str, Any]:
+    """Deletes the primary CV file and its extracted data. The most recent remaining CV (if any)
+    becomes primary. Profile data the user already applied from the CV is kept."""
+    cv = await cv_service.get_primary_cv(db, user.id)
+    if cv is None:
+        raise NotFoundError("You have not uploaded a CV.", code="cv_not_found")
+    await cv_service.delete_cv(db, user, storage, cv.id)
+    return ok(None, "CV deleted")
 
 
 @router.get("/{cv_id}", response_model=ApiResponse[CVOut], summary="Get CV metadata")
