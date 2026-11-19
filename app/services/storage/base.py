@@ -53,3 +53,7 @@ class StorageBackend(abc.ABC):
         self, bucket: str, path: str, expires_in: int, download_name: str | None = None
     ) -> str:
         """Return a short-lived URL granting read access to one object."""
+
+    async def check(self, bucket: str) -> dict[str, object]:
+        """Readiness probe: raise StorageError when the bucket cannot be used."""
+        return {"bucket": bucket, "exists": True}

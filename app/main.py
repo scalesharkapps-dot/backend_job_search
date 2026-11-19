@@ -54,6 +54,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     problems = settings.validate_production()
     if problems:
         raise ConfigurationError("Invalid production configuration: " + "; ".join(problems))
+    if settings.STORAGE_BACKEND == "supabase":
+        from app.services.storage.supabase import missing_configuration
+
+        missing = missing_configuration()
+        if missing:
+            # Non-production environments may boot without storage, but CV uploads will fail with
+            # storage_not_configured until these are set. Make that obvious in the startup log.
+            logger.error(
+                "STORAGE_BACKEND=supabase but %s is not set: CV and image uploads will fail "
+                "(check GET %s/health/storage)",
+                " and ".join(missing),
+                settings.API_V1_PREFIX,
+            )
 
     docs_enabled = settings.ENABLE_DOCS
     app = FastAPI(

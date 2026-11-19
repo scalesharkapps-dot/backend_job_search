@@ -98,6 +98,20 @@ class LocalStorage(StorageBackend):
         except OSError as exc:
             raise StorageError() from exc
 
+    async def check(self, bucket: str) -> dict[str, object]:
+        def _probe() -> None:
+            target = self.root / bucket
+            target.mkdir(parents=True, exist_ok=True)
+            probe = target / ".write-probe"
+            probe.write_bytes(b"ok")
+            probe.unlink()
+
+        try:
+            await asyncio.to_thread(_probe)
+        except OSError as exc:
+            raise StorageError() from exc
+        return {"bucket": bucket, "exists": True}
+
     async def signed_url(
         self, bucket: str, path: str, expires_in: int, download_name: str | None = None
     ) -> str:

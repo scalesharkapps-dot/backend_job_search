@@ -215,8 +215,46 @@ class CVOut(BaseModel):
     updated_at: datetime
 
 
+class CVSummaryOut(BaseModel):
+    """Structured data found in the CV, for the user to review.
+
+    Only information actually present in the document is returned; nothing is inferred.
+    `qualifications` are certifications/licences found in the CV.
+    """
+
+    skills: list[str] = []
+    experience: list[dict[str, Any]] = []
+    education: list[dict[str, Any]] = []
+    qualifications: list[str] = []
+    job_titles: list[str] = []
+    years_of_experience: float | None = None
+    is_user_confirmed: bool = False
+
+
 class CVUploadOut(CVOut):
     skills_found: int = 0
+    # Added for review screens; null when extraction did not complete (see processing_status).
+    extracted_data: CVSummaryOut | None = None
+    # Set when the upload replaced the previous primary CV (`?replace=true`).
+    replaced_cv_id: uuid.UUID | None = None
+
+
+class CVMeOut(BaseModel):
+    """The user's current (primary) CV with its extracted data, or nulls when none is uploaded."""
+
+    cv: CVOut | None = None
+    extracted_data: CVSummaryOut | None = None
+
+
+class CVStatusOut(BaseModel):
+    has_cv: bool
+    cv_id: uuid.UUID | None = None
+    processing_status: CVProcessingStatus | None = None
+    extraction_error: str | None = None
+    is_reviewed: bool = False
+    total_cvs: int = 0
+    uploaded_at: datetime | None = None
+    processed_at: datetime | None = None
 
 
 class CVDownloadOut(BaseModel):

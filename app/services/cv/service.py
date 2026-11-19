@@ -40,7 +40,8 @@ def _bucket() -> str:
 async def get_user_cv(db: AsyncSession, user_id: uuid.UUID, cv_id: uuid.UUID, *, with_data: bool = False) -> UserCV:
     stmt = select(UserCV).where(UserCV.id == cv_id, UserCV.user_id == user_id)
     if with_data:
-        stmt = stmt.options(selectinload(UserCV.extracted))
+        # populate_existing: the CV may already be in the identity map without its extracted data loaded.
+        stmt = stmt.options(selectinload(UserCV.extracted)).execution_options(populate_existing=True)
     cv = await db.scalar(stmt)
     if cv is None:
         raise NotFoundError("CV not found.", code="cv_not_found")
@@ -61,6 +62,7 @@ async def get_primary_cv(db: AsyncSession, user_id: uuid.UUID) -> UserCV | None:
         .options(selectinload(UserCV.extracted))
         .order_by(UserCV.is_primary.desc(), UserCV.created_at.desc())
         .limit(1)
+        .execution_options(populate_existing=True)
     )
 
 
@@ -113,10 +115,22 @@ async def _apply_processing(db: AsyncSession, cv: UserCV, data: bytes) -> UserCV
     return cv
 
 
-async def upload_cv(db: AsyncSession, user: User, storage: StorageBackend, file: ValidatedFile) -> tuple[UserCV, int]:
+async def upload_cv(
+    db: AsyncSession, user: User, storage: StorageBackend, file: ValidatedFile, *, replace: bool = False
+) -> tuple[UserCV, int, uuid.UUID | None]:
+    """Store, record and process a CV. Returns (cv, skills_found, replaced_cv_id).
+
+    With ``replace=True`` the new CV becomes primary and the previous primary CV
+    (file + records) is removed only AFTER the new one is safely stored and recorded.
+    """
     settings = get_settings()
     count = await db.scalar(select(func.count()).select_from(UserCV).where(UserCV.user_id == user.id)) or 0
-    if count >= settings.CV_MAX_FILES_PER_USER:
+    previous = None
+    if replace:
+        previous = await db.scalar(
+            select(UserCV).where(UserCV.user_id == user.id).order_by(UserCV.is_primary.desc(), UserCV.created_at.desc()).limit(1)
+        )
+    if count - (1 if previous else 0) >= settings.CV_MAX_FILES_PER_USER:
         raise ConflictError(
             f"You can store at most {settings.CV_MAX_FILES_PER_USER} CVs. Delete one first.",
             code="cv_limit_reached",
@@ -139,10 +153,13 @@ async def upload_cv(db: AsyncSession, user: User, storage: StorageBackend, file:
         file_size=len(file.data),
         file_hash=file.sha256,
         processing_status=CVProcessingStatus.PROCESSING,
-        is_primary=count == 0,
+        is_primary=count == 0 or replace,
     )
-    db.add(cv)
     try:
+        if replace:
+            # One primary per user (unique index): clear the flag before inserting the new primary.
+            await db.execute(update(UserCV).where(UserCV.user_id == user.id).values(is_primary=False))
+        db.add(cv)
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -154,7 +171,33 @@ async def upload_cv(db: AsyncSession, user: User, storage: StorageBackend, file:
         raise
     cv = await _apply_processing(db, cv, file.data)
     skills = await db.scalar(select(CVExtractedData.skills).where(CVExtractedData.cv_id == cv.id))
-    return cv, len(skills or [])
+    replaced_id = None
+    if previous is not None:
+        replaced_id = previous.id
+        try:
+            await delete_cv(db, user, storage, previous.id)
+        except (StorageError, NotFoundError):
+            # The new CV is already stored and primary; the old one stays listed so the user can retry.
+            logger.warning("Replacing CV: previous CV could not be removed")
+            replaced_id = None
+        await db.refresh(cv)
+    return cv, len(skills or []), replaced_id
+
+
+def summary_payload(cv: UserCV) -> dict[str, Any] | None:
+    """Review structure (skills/experience/education/qualifications/job_titles) or None."""
+    data = cv.extracted
+    if data is None or cv.processing_status != CVProcessingStatus.COMPLETED:
+        return None
+    return {
+        "skills": list(data.skills or []),
+        "experience": list(data.work_experience or []),
+        "education": list(data.education or []),
+        "qualifications": list(data.certifications or []),
+        "job_titles": list(data.job_titles or []),
+        "years_of_experience": data.years_of_experience,
+        "is_user_confirmed": data.is_user_confirmed,
+    }
 
 
 async def _safe_delete(storage: StorageBackend, path: str) -> None:
