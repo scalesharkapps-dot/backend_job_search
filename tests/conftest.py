@@ -254,3 +254,7 @@ def user_factory(db: AsyncSession) -> Callable[..., Any]:
         return await create_user(db, role, **kw)
 
     return factory
+
+
+# Billing fixtures (clock, billing_settings, revenuecat) shared by the trial/subscription suites.
+from tests.billing_helpers import billing_settings, clock, revenuecat  # noqa: E402, F401

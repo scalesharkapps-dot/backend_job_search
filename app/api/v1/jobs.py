@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import ValidationError
 
-from app.api.deps import CurrentUser, DBSession
+from app.api.deps import AppUser, DBSession
 from app.core.config import get_settings
 from app.core.exceptions import ValidationAppError
 from app.core.rate_limit import enforce_user_limit, rate_limit
@@ -47,7 +47,7 @@ Client = Annotated[JSearchClient, Depends(get_jsearch_client)]
     summary="Search jobs (Pakistan, international, remote)",
 )
 async def search_jobs(
-    user: CurrentUser,
+    user: AppUser,
     db: DBSession,
     client: Client,
     query: Annotated[str, Query(min_length=2, max_length=200, description="Job title or keywords, e.g. 'Python Developer'")],
@@ -116,7 +116,7 @@ async def filters() -> dict[str, Any]:
 
 @router.get("/suggestions", response_model=ApiResponse[list[Suggestion]], summary="Job title suggestions")
 async def job_suggestions(
-    user: CurrentUser,
+    user: AppUser,
     db: DBSession,
     q: Annotated[str, Query(min_length=2, max_length=60, description="Prefix typed by the user")],
     limit: Annotated[int, Query(ge=1, le=20)] = 10,
@@ -128,7 +128,7 @@ async def job_suggestions(
 
 @router.get("/sharkhire", response_model=ApiResponse[dict[str, Any]], summary="Jobs posted on SharkHire")
 async def sharkhire_jobs(
-    user: CurrentUser,
+    user: AppUser,
     db: DBSession,
     q: Annotated[str | None, Query(max_length=100, description="Title or company")] = None,
     location: Annotated[str | None, Query(max_length=100)] = None,
@@ -164,7 +164,7 @@ async def sharkhire_jobs(
 @router.get("/{job_id}", response_model=ApiResponse[JobDetailOut], summary="Job details")
 async def get_job(
     job_id: uuid.UUID,
-    user: CurrentUser,
+    user: AppUser,
     db: DBSession,
     client: Client,
     refresh: Annotated[bool | None, Query(description="Force (true) or skip (false) a provider refresh")] = None,

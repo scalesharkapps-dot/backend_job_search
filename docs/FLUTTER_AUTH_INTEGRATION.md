@@ -69,7 +69,20 @@ stateless JWT and remains valid until it expires (≤ 1h); that's why local dele
 ## 8. Email verification
 Supabase sends the email; the link opens `AUTH_EMAIL_REDIRECT_URL` (e.g. `sharkhire://auth/callback`) — register this
 deep link in AndroidManifest / iOS URL types and in Supabase → Auth → URL configuration.
-Resend: `POST /auth/resend-verification {"email": ...}` (generic response, 5/hour).
+Resend: `POST /auth/resend-verification {"email": ...}` — at most **2 resends** per verification cycle
+(1 initial + 2 = 3 e-mails), enforced server-side in PostgreSQL per e-mail address, 60 s cooldown between e-mails.
+
+| Status | `error.code` | Meaning / UI |
+|---|---|---|
+| 200 | — | sent; show `data.remaining_attempts` (also `max_resends`, `cooldown_seconds`) |
+| 429 | `resend_limit_reached` | message is exactly "You've reached the maximum resend limit. Please try again later."; `data.remaining_attempts` = 0; `Retry-After` = seconds until a new cycle (24 h) |
+| 429 | `resend_cooldown` | wait `Retry-After` seconds; `data.remaining_attempts` still available |
+| 429 | `rate_limited` | per-IP or Supabase e-mail rate limit (not counted as an attempt) |
+| 409 | `email_already_verified` | go to sign-in |
+| 503 | `auth_unavailable` | Supabase unreachable / rejected (not counted as an attempt) |
+
+Registering again with an unverified e-mail does not reset the limit (it counts as a resend; once the limit is
+reached no further e-mail is sent, but the usual `201` "check your email" response is returned).
 
 ## 9–11. Forgot / reset password
 1. `POST /auth/forgot-password {"email": ...}` → always "If an account exists…".

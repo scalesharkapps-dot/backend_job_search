@@ -244,11 +244,17 @@ def test_every_table_is_covered_by_rls_lockdown():
 
     from app.models import Base
 
-    path = next(pathlib.Path("alembic/versions").glob("*_0007_security_rls_lockdown.py"))
-    spec = importlib.util.spec_from_file_location("m0007", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    missing = set(Base.metadata.tables) - set(module.TABLES)
+    # 0007 locked down the original tables; later migrations lock down the tables they add
+    # and declare them in a module-level TABLES tuple.
+    covered: set[str] = set()
+    for path in sorted(pathlib.Path("alembic/versions").glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"mig_{path.stem}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tables = getattr(module, "TABLES", ())
+        if tables and "ENABLE ROW LEVEL SECURITY" in path.read_text(encoding="utf-8"):
+            covered |= set(tables)
+    missing = set(Base.metadata.tables) - covered
     assert not missing, f"Tables without RLS lockdown: {sorted(missing)}"
 
 

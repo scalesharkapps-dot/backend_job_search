@@ -68,6 +68,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 settings.API_V1_PREFIX,
             )
 
+    for warning in settings.subscription_config_warnings():
+        # Names only, never values. Missing billing config fails closed (no access is granted).
+        logger.warning("Subscription configuration: %s", warning)
+
     docs_enabled = settings.ENABLE_DOCS
     app = FastAPI(
         title=settings.APP_NAME,

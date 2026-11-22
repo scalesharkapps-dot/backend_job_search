@@ -10,7 +10,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "testing", "staging", "production"]
@@ -85,6 +85,36 @@ class Settings(BaseSettings):
     AUTH_EMAIL_REDIRECT_URL: str | None = None
     AUTH_PASSWORD_RESET_REDIRECT_URL: str | None = None
     PASSWORD_MIN_LENGTH: int = 8
+    # Signup verification e-mails: 1 initial + at most this many successful resends per cycle
+    # (persisted in PostgreSQL, see app/services/email_verification.py).
+    EMAIL_VERIFICATION_MAX_RESENDS: int = Field(default=2, ge=0, le=10)
+    # Minimum gap between two verification e-mails to the same address (Supabase's own
+    # per-user "max frequency" defaults to 60 s; keep this >= that value).
+    EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS: int = Field(default=60, ge=0)
+    # A new verification cycle (fresh resend allowance) starts this many hours after the
+    # current one began. 0 = never (the limit is permanent until the e-mail is verified).
+    EMAIL_VERIFICATION_CYCLE_HOURS: int = Field(default=24, ge=0)
+
+    # ---- App access: 3-day app-managed trial + RevenueCat subscriptions ----
+    # Master switch for the paywall on protected routes (status/sync/webhook keep working).
+    SUBSCRIPTION_ENFORCEMENT_ENABLED: bool = True
+    # Comma-separated roles that never need a trial/subscription (staff accounts).
+    SUBSCRIPTION_EXEMPT_ROLES: str = "admin"
+    # RevenueCat secret API key (sk_...), server-side only. Used for GET /v1/subscribers/{id}.
+    REVENUECAT_SECRET_API_KEY: SecretStr | None = None
+    # Exact value configured as the webhook "Authorization header" in the RevenueCat dashboard.
+    REVENUECAT_WEBHOOK_AUTHORIZATION: SecretStr | None = None
+    REVENUECAT_API_BASE_URL: str = "https://api.revenuecat.com/v1"
+    REVENUECAT_ENTITLEMENT_ID: str = "app_access"
+    REVENUECAT_OFFERING_ID: str = "default"
+    # Comma-separated store product identifiers per plan (Play and App Store ids may differ).
+    REVENUECAT_PRODUCT_INTERNATIONAL: str = ""
+    REVENUECAT_PRODUCT_PAKISTAN: str = ""
+    # Accept SANDBOX purchases/events. None = only outside production.
+    REVENUECAT_ALLOW_SANDBOX: bool | None = None
+    REVENUECAT_TIMEOUT_SECONDS: float = 10.0
+    REVENUECAT_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
+    REVENUECAT_RETRY_BACKOFF_SECONDS: float = Field(default=0.5, ge=0)
 
     # ---- Storage ----
     STORAGE_BACKEND: Literal["local", "supabase"] = "local"
@@ -178,6 +208,14 @@ class Settings(BaseSettings):
             raise ValueError("LOG_LEVEL must be CRITICAL, ERROR, WARNING, INFO or DEBUG")
         return value
 
+    @field_validator(
+        "REVENUECAT_ALLOW_SANDBOX", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTHORIZATION", mode="before"
+    )
+    @classmethod
+    def _empty_is_unset(cls, value: object) -> object:
+        # ".env.example" style "NAME=" lines mean "not configured".
+        return None if isinstance(value, str) and not value.strip() else value
+
     @model_validator(mode="after")
     def _weights_positive(self) -> Settings:
         weights = self.recommendation_weights
@@ -201,6 +239,41 @@ class Settings(BaseSettings):
     @property
     def supabase_url(self) -> str | None:
         return self.SUPABASE_URL.rstrip("/") if self.SUPABASE_URL else None
+
+    @property
+    def subscription_exempt_roles(self) -> set[str]:
+        return {r.strip().lower() for r in self.SUBSCRIPTION_EXEMPT_ROLES.split(",") if r.strip()}
+
+    @property
+    def revenuecat_allow_sandbox(self) -> bool:
+        if self.REVENUECAT_ALLOW_SANDBOX is None:
+            return not self.is_production
+        return self.REVENUECAT_ALLOW_SANDBOX
+
+    @staticmethod
+    def _csv(value: str) -> list[str]:
+        return [v.strip() for v in value.split(",") if v.strip()]
+
+    @property
+    def revenuecat_products_international(self) -> list[str]:
+        return self._csv(self.REVENUECAT_PRODUCT_INTERNATIONAL)
+
+    @property
+    def revenuecat_products_pakistan(self) -> list[str]:
+        return self._csv(self.REVENUECAT_PRODUCT_PAKISTAN)
+
+    def subscription_config_warnings(self) -> list[str]:
+        """Missing billing configuration (logged at startup; never blocks boot)."""
+        warnings: list[str] = []
+        if not self.SUBSCRIPTION_ENFORCEMENT_ENABLED:
+            return warnings
+        if not self.REVENUECAT_WEBHOOK_AUTHORIZATION:
+            warnings.append("REVENUECAT_WEBHOOK_AUTHORIZATION is not set: webhooks are rejected")
+        if not self.REVENUECAT_SECRET_API_KEY:
+            warnings.append("REVENUECAT_SECRET_API_KEY is not set: /subscriptions/sync and /restore are unavailable")
+        if not (self.revenuecat_products_international or self.revenuecat_products_pakistan):
+            warnings.append("REVENUECAT_PRODUCT_* are not set: /subscriptions/plans lists no product ids")
+        return warnings
 
     @property
     def jwt_issuer(self) -> str | None:

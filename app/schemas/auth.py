@@ -110,6 +110,12 @@ class SignupOut(BaseModel):
     email_confirmation_required: bool
 
 
+class ResendVerificationOut(BaseModel):
+    remaining_attempts: int = Field(description="Successful resends still allowed in this verification cycle.")
+    max_resends: int = Field(description="Resends allowed per verification cycle (initial e-mail not included).")
+    cooldown_seconds: int = Field(description="Minimum wait before the next resend may be requested.")
+
+
 class LogoutOut(BaseModel):
     revoked: bool
     detail: str

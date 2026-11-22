@@ -31,12 +31,15 @@ class AppError(Exception):
         status_code: int | None = None,
         details: Any = None,
         headers: dict[str, str] | None = None,
+        data: Any = None,
     ) -> None:
         self.message = message or self.message
         self.code = code or self.code
         self.status_code = status_code or self.status_code
         self.details = details
         self.headers = headers
+        # Optional payload for the envelope's ``data`` field (null for most errors).
+        self.data = data
         super().__init__(self.message)
 
 
@@ -118,13 +121,13 @@ class NotConfiguredError(ServiceUnavailableError):
 
 
 def error_body(
-    code: str, message: str, details: Any = None, *, msg: str | None = None
+    code: str, message: str, details: Any = None, *, msg: str | None = None, data: Any = None
 ) -> dict[str, Any]:
     """Build the standard error envelope."""
     return {
         "success": False,
         "message": msg or message,
-        "data": None,
+        "data": data,
         "error": {
             "code": code,
             "message": message,
@@ -170,7 +173,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             logger.warning("AppError %s: %s", exc.code, exc.message)
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_body(exc.code, exc.message, exc.details),
+            content=error_body(exc.code, exc.message, exc.details, data=exc.data),
             headers=exc.headers,
         )
 

@@ -18,12 +18,15 @@ from app.schemas.auth import (
     LogoutOut,
     MeOut,
     RefreshRequest,
+    ResendVerificationOut,
     ResetPasswordRequest,
     SessionOut,
     SignupOut,
     SignupRequest,
     UserOut,
 )
+from app.services import email_verification
+from app.services.billing.trial import ensure_trial
 from app.services.supabase_auth import SupabaseAuthClient, get_supabase_auth
 from app.services.user_service import sync_user, user_from_supabase_payload
 
@@ -33,6 +36,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"], responses=ERROR_RESP
 Auth = Annotated[SupabaseAuthClient, Depends(get_supabase_auth)]
 
 _GENERIC_EMAIL_MSG = "If an account exists for this email, a message has been sent."
+_RESEND_MSG = "If this email is registered and not yet verified, a new verification email has been sent."
 
 
 async def _session_from_payload(db: DBSession, payload: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +54,27 @@ async def _session_from_payload(db: DBSession, payload: dict[str, Any]) -> dict[
     }
 
 
+async def _start_trial_for_signup(db: DBSession, payload: dict[str, Any] | None) -> None:
+    """Start the 3-day app trial as soon as Supabase confirms a new account.
+
+    Supabase returns an obfuscated user without identities for an e-mail that is
+    already registered; no trial is created for those. Failures never fail the
+    signup -- the trial is then created on the user's first authenticated request.
+    """
+    if not payload:
+        return
+    user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else payload
+    if not user_payload.get("id") or not (payload.get("access_token") or user_payload.get("identities")):
+        return
+    try:
+        identity = user_from_supabase_payload(user_payload)
+        user = await sync_user(db, **identity)
+        await ensure_trial(db, user.id)
+    except Exception:
+        await db.rollback()
+        logger.warning("Could not start the app trial at signup; it starts on first sign-in")
+
+
 @router.post(
     "/signup",
     response_model=ApiResponse[SignupOut],
@@ -65,9 +90,14 @@ async def signup(body: SignupRequest, db: DBSession, auth: Auth) -> dict[str, An
     that is already registered (with confirmation enabled) is indistinguishable.
     """
     metadata = {"full_name": body.full_name} if body.full_name else {}
-    payload = await auth.sign_up(body.email, body.password, metadata)
+    # Repeated registrations of an unverified address make Supabase send another
+    # confirmation e-mail, so they are counted against (and cannot reset) the resend limit.
+    payload = await email_verification.signup_with_tracking(
+        db, body.email, lambda: auth.sign_up(body.email, body.password, metadata)
+    )
 
-    if payload.get("access_token"):
+    await _start_trial_for_signup(db, payload)
+    if payload and payload.get("access_token"):
         session = await _session_from_payload(db, payload)
         return ok(
             {"user": session["user"], "session": session, "email_confirmation_required": False},
@@ -135,13 +165,33 @@ async def me(ctx: Annotated[AuthContext, Depends(get_auth_context)]) -> dict[str
 
 @router.post(
     "/resend-verification",
-    response_model=ApiResponse[None],
-    dependencies=[Depends(rate_limit("auth_email", "RATE_LIMIT_EMAIL_PER_HOUR", 3600))],
+    response_model=ApiResponse[ResendVerificationOut],
+    # Separate per-IP bucket: password-recovery requests must not consume resends.
+    dependencies=[Depends(rate_limit("auth_resend", "RATE_LIMIT_EMAIL_PER_HOUR", 3600))],
     summary="Resend the signup confirmation email",
 )
-async def resend_verification(body: EmailRequest, auth: Auth) -> dict[str, Any]:
-    await auth.resend_signup_confirmation(body.email)
-    return ok(None, _GENERIC_EMAIL_MSG)
+async def resend_verification(body: EmailRequest, db: DBSession, auth: Auth) -> dict[str, Any]:
+    """Resend the signup verification e-mail (max 2 resends per verification cycle).
+
+    * `200` -- Supabase accepted the request; `data.remaining_attempts` is what is left.
+    * `429 resend_limit_reached` -- limit used up (`data.remaining_attempts` = 0).
+    * `429 resend_cooldown` -- requested too soon after the previous e-mail.
+    * `409 email_already_verified` -- nothing to resend; sign in instead.
+
+    Attempts are stored in PostgreSQL per e-mail address and only successful
+    Supabase requests are counted.
+    """
+    result = await email_verification.resend_verification(
+        db, body.email, lambda: auth.resend_signup_confirmation(body.email)
+    )
+    return ok(
+        {
+            "remaining_attempts": result.remaining_attempts,
+            "max_resends": result.max_resends,
+            "cooldown_seconds": result.cooldown_seconds,
+        },
+        _RESEND_MSG,
+    )
 
 
 @router.post(

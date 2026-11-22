@@ -203,10 +203,31 @@ class SupabaseAuthClient:
         return False
 
     async def resend_signup_confirmation(self, email: str) -> None:
-        body: dict[str, Any] = {"type": "signup", "email": email}
-        if self.settings.AUTH_EMAIL_REDIRECT_URL:
-            body["options"] = {"emailRedirectTo": self.settings.AUTH_EMAIL_REDIRECT_URL}
-        response = await self._request("POST", "/resend", json=body)
+        """Ask Supabase to send a new signup confirmation e-mail.
+
+        The redirect URL must be the ``redirect_to`` *query parameter* (as for
+        ``/signup``). GoTrue ignores an ``options.emailRedirectTo`` body field -- that
+        is the supabase-js SDK option name, not the REST API -- so resent links
+        would fall back to the project's Site URL instead of the app deep link.
+        """
+        params = (
+            {"redirect_to": self.settings.AUTH_EMAIL_REDIRECT_URL}
+            if self.settings.AUTH_EMAIL_REDIRECT_URL
+            else None
+        )
+        response = await self._request(
+            "POST", "/resend", json={"type": "signup", "email": email}, params=params
+        )
+        if response.status_code >= 400:
+            payload = self._json(response)
+            code = _error_code(payload)
+            message = _error_message(payload).lower()
+            if code == "email_already_confirmed" or "already confirmed" in message:
+                logger.info("Supabase Auth resend skipped: email already confirmed")
+                raise ConflictError(
+                    "This email address is already verified. Please sign in.",
+                    code="email_already_verified",
+                )
         self._raise_for(response, "resend")
 
     async def send_password_recovery(self, email: str) -> None:
