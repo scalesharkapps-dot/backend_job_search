@@ -134,6 +134,12 @@ class SupabaseAuthClient:
             raise AppError("Sign-up is currently disabled.", code="signup_disabled", status_code=403)
         if code in {"otp_expired", "bad_jwt", "flow_state_expired"}:
             raise AuthenticationError("The link or token is invalid or has expired.", code="invalid_token")
+        if code in {"reauthentication_needed", "reauthentication_not_valid"}:
+            raise AppError(
+                "Please confirm your password again to continue.",
+                code="reauthentication_required",
+                status_code=403,
+            )
         if code == "same_password":
             raise ValidationAppError(
                 "The new password must differ from the old password.", code="same_password"
@@ -246,6 +252,17 @@ class SupabaseAuthClient:
         self._raise_for(response, "verify")
         return self._json(response)
 
+    async def verify_email_token_hash(self, token_hash: str, otp_type: str = "email") -> dict[str, Any]:
+        """Confirm a signup/e-mail link (``token_hash`` from the e-mail template) and get a session.
+
+        Expired, already used and unknown tokens all return ``otp_expired`` from Supabase.
+        """
+        response = await self._request(
+            "POST", "/verify", json={"type": otp_type, "token_hash": token_hash}
+        )
+        self._raise_for(response, "verify_email")
+        return self._json(response)
+
     async def update_password(self, access_token: str, new_password: str) -> dict[str, Any]:
         response = await self._request(
             "PUT", "/user", json={"password": new_password}, access_token=access_token
@@ -263,6 +280,30 @@ class SupabaseAuthClient:
             "PUT", f"/admin/users/{user_id}", json=attributes, headers=headers
         )
         self._raise_for(response, "admin_update_user")
+        return True
+
+    async def admin_delete_user(self, user_id: str) -> bool:
+        """Permanently delete an Auth user (server-side, service-role key only).
+
+        Supabase removes the user's sessions and refresh tokens with it. Returns
+        False when the user no longer exists (already deleted -- safe to retry).
+        """
+        if not self.settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise NotConfiguredError(
+                "Account deletion is not configured on the server.",
+                code="account_deletion_not_configured",
+            )
+        key = self.settings.SUPABASE_SERVICE_ROLE_KEY.get_secret_value()
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        response = await self._request("DELETE", f"/admin/users/{user_id}", headers=headers)
+        if response.status_code == 404:
+            return False
+        if response.status_code in (401, 403):
+            logger.error("Supabase Auth rejected the service-role key for admin user deletion")
+            raise ServiceUnavailableError(
+                "Account deletion is temporarily unavailable.", code="auth_unavailable"
+            )
+        self._raise_for(response, "admin_delete_user")
         return True
 
 

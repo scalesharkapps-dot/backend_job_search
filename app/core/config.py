@@ -262,6 +262,22 @@ class Settings(BaseSettings):
     def revenuecat_products_pakistan(self) -> list[str]:
         return self._csv(self.REVENUECAT_PRODUCT_PAKISTAN)
 
+    def auth_redirect_warnings(self) -> list[str]:
+        """Redirect settings that make Supabase fall back to its Site URL (often localhost:3000).
+
+        Names only, never values. Logged at startup; never blocks boot.
+        """
+        warnings: list[str] = []
+        for name in ("AUTH_EMAIL_REDIRECT_URL", "AUTH_PASSWORD_RESET_REDIRECT_URL"):
+            value = (getattr(self, name) or "").strip()
+            if not value:
+                warnings.append(f"{name} is not set: Supabase e-mail links will open the project's Site URL")
+            elif "://" not in value:
+                warnings.append(f"{name} is not an absolute URL/deep link: Supabase will ignore it")
+            elif self.is_production and any(h in value.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")):  # noqa: S104
+                warnings.append(f"{name} points to a local address in production")
+        return warnings
+
     def subscription_config_warnings(self) -> list[str]:
         """Missing billing configuration (logged at startup; never blocks boot)."""
         warnings: list[str] = []

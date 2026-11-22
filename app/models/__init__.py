@@ -1,5 +1,6 @@
 """Import every model so ``Base.metadata`` is complete (Alembic, tests)."""
 
+from app.models.account_deletion import DeletedAccount
 from app.models.application import (
     Application,
     ApplicationStatusHistory,
@@ -34,6 +35,7 @@ __all__ = [
     "ApplicationStatusHistory",
     "Base",
     "CVExtractedData",
+    "DeletedAccount",
     "EmailVerificationTracker",
     "EmployerProfile",
     "EmployerVerificationRequest",

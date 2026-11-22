@@ -8,11 +8,22 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
-from app.api.deps import AuthContext, DBSession, bearer_scheme, get_auth_context
-from app.core.exceptions import AuthenticationError, BadRequestError, ExternalServiceError
+from app.api.deps import AuthContext, CurrentUser, DBSession, bearer_scheme, get_auth_context
+from app.core.exceptions import (
+    AppError,
+    AuthenticationError,
+    BadRequestError,
+    ExternalServiceError,
+    PermissionDeniedError,
+    ValidationAppError,
+)
 from app.core.rate_limit import rate_limit
 from app.core.responses import ERROR_RESPONSES, ApiResponse, ok
 from app.schemas.auth import (
+    ChangePasswordOut,
+    ChangePasswordRequest,
+    DeleteAccountOut,
+    DeleteAccountRequest,
     EmailRequest,
     LoginRequest,
     LogoutOut,
@@ -24,9 +35,11 @@ from app.schemas.auth import (
     SignupOut,
     SignupRequest,
     UserOut,
+    VerifyEmailRequest,
 )
-from app.services import email_verification
+from app.services import account_deletion, email_verification
 from app.services.billing.trial import ensure_trial
+from app.services.storage import StorageBackend, get_storage
 from app.services.supabase_auth import SupabaseAuthClient, get_supabase_auth
 from app.services.user_service import sync_user, user_from_supabase_payload
 
@@ -236,3 +249,98 @@ async def reset_password(
         raise BadRequestError("Provide a recovery token.", code="recovery_token_required")
     await auth.update_password(token, body.new_password)
     return ok(None, "Password updated successfully. Please sign in again.")
+
+
+@router.post(
+    "/verify-email",
+    response_model=ApiResponse[SessionOut],
+    dependencies=[Depends(rate_limit("auth_verify", "RATE_LIMIT_AUTH_PER_MINUTE"))],
+    summary="Confirm an e-mail address with the token_hash from the confirmation link",
+)
+async def verify_email(body: VerifyEmailRequest, db: DBSession, auth: Auth) -> dict[str, Any]:
+    """For confirmation e-mail templates that pass ``{{ .TokenHash }}`` to the app.
+
+    Returns a session and marks the local user as verified. Expired, already used
+    or unknown links -> ``401 invalid_token`` (request a new one via resend-verification).
+    """
+    payload = await auth.verify_email_token_hash(body.token_hash, body.type)
+    session = await _session_from_payload(db, payload)
+    return ok(session, "Email address verified")
+
+
+@router.post(
+    "/change-password",
+    response_model=ApiResponse[ChangePasswordOut],
+    dependencies=[Depends(rate_limit("auth_change_password", "RATE_LIMIT_AUTH_PER_MINUTE"))],
+    summary="Change my password (requires the current password)",
+)
+async def change_password(
+    body: ChangePasswordRequest, db: DBSession, auth: Auth, user: CurrentUser,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> dict[str, Any]:
+    """Only the signed-in account owner, and only with the current password.
+
+    The password is changed with the caller's own session. If Supabase demands a
+    recent sign-in ("Secure password change"), the change is made with a fresh session,
+    which is returned in ``data.session`` -- clients must then store those tokens.
+    """
+    if body.current_password == body.new_password:
+        raise ValidationAppError("The new password must differ from the old password.", code="same_password")
+    try:
+        fresh = await auth.sign_in_with_password(user.email, body.current_password)
+    except AuthenticationError as exc:
+        if exc.code in {"invalid_credentials", "email_not_confirmed"}:
+            raise PermissionDeniedError("The current password is incorrect.", code="invalid_password") from None
+        raise
+    fresh_user = fresh.get("user") if isinstance(fresh.get("user"), dict) else {}
+    if str(fresh_user.get("id")) != str(user.id) or not fresh.get("access_token"):
+        raise PermissionDeniedError("The current password is incorrect.", code="invalid_password")
+
+    new_session = None
+    try:
+        await auth.update_password(ctx.access_token, body.new_password)
+    except AppError as exc:
+        if exc.code != "reauthentication_required":
+            raise
+        await auth.update_password(fresh["access_token"], body.new_password)
+        new_session = await _session_from_payload(db, fresh)
+    if new_session is None:
+        try:  # the session opened to check the current password is not needed any more
+            await auth.sign_out(fresh["access_token"])
+        except AppError:
+            logger.info("Could not revoke the password-check session")
+    return ok({"password_changed": True, "session": new_session}, "Password changed successfully")
+
+
+@router.post(
+    "/delete-account",
+    response_model=ApiResponse[DeleteAccountOut],
+    dependencies=[Depends(rate_limit("auth_delete_account", "RATE_LIMIT_AUTH_PER_MINUTE"))],
+    summary="Permanently delete my account and data",
+)
+async def delete_account(
+    body: DeleteAccountRequest,
+    db: DBSession,
+    auth: Auth,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> dict[str, Any]:
+    """Irreversible. Requires the current password and ``confirmation: "DELETE"``.
+
+    Deletes the user's files, the Supabase Auth user (all sessions) and every
+    user-owned database record. Store subscriptions are billed by Google Play /
+    the App Store and must be cancelled there (``active_store_subscription``).
+    """
+    result = await account_deletion.delete_account(
+        db, ctx.user, body.password, body.confirmation, auth, storage
+    )
+    return ok(
+        {
+            "deleted": True,
+            "user_id": result.user_id,
+            "storage_objects_deleted": result.storage_objects_deleted,
+            "active_store_subscription": result.active_store_subscription,
+        },
+        "Your account has been permanently deleted.",
+    )
+
