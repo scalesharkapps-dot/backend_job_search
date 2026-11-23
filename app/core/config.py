@@ -10,7 +10,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "testing", "staging", "production"]
@@ -85,6 +85,36 @@ class Settings(BaseSettings):
     AUTH_EMAIL_REDIRECT_URL: str | None = None
     AUTH_PASSWORD_RESET_REDIRECT_URL: str | None = None
     PASSWORD_MIN_LENGTH: int = 8
+    # Signup verification e-mails: 1 initial + at most this many successful resends per cycle
+    # (persisted in PostgreSQL, see app/services/email_verification.py).
+    EMAIL_VERIFICATION_MAX_RESENDS: int = Field(default=2, ge=0, le=10)
+    # Minimum gap between two verification e-mails to the same address (Supabase's own
+    # per-user "max frequency" defaults to 60 s; keep this >= that value).
+    EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS: int = Field(default=60, ge=0)
+    # A new verification cycle (fresh resend allowance) starts this many hours after the
+    # current one began. 0 = never (the limit is permanent until the e-mail is verified).
+    EMAIL_VERIFICATION_CYCLE_HOURS: int = Field(default=24, ge=0)
+
+    # ---- App access: 3-day app-managed trial + RevenueCat subscriptions ----
+    # Master switch for the paywall on protected routes (status/sync/webhook keep working).
+    SUBSCRIPTION_ENFORCEMENT_ENABLED: bool = True
+    # Comma-separated roles that never need a trial/subscription (staff accounts).
+    SUBSCRIPTION_EXEMPT_ROLES: str = "admin"
+    # RevenueCat secret API key (sk_...), server-side only. Used for GET /v1/subscribers/{id}.
+    REVENUECAT_SECRET_API_KEY: SecretStr | None = None
+    # Exact value configured as the webhook "Authorization header" in the RevenueCat dashboard.
+    REVENUECAT_WEBHOOK_AUTHORIZATION: SecretStr | None = None
+    REVENUECAT_API_BASE_URL: str = "https://api.revenuecat.com/v1"
+    REVENUECAT_ENTITLEMENT_ID: str = "app_access"
+    REVENUECAT_OFFERING_ID: str = "default"
+    # Comma-separated store product identifiers per plan (Play and App Store ids may differ).
+    REVENUECAT_PRODUCT_INTERNATIONAL: str = ""
+    REVENUECAT_PRODUCT_PAKISTAN: str = ""
+    # Accept SANDBOX purchases/events. None = only outside production.
+    REVENUECAT_ALLOW_SANDBOX: bool | None = None
+    REVENUECAT_TIMEOUT_SECONDS: float = 10.0
+    REVENUECAT_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
+    REVENUECAT_RETRY_BACKOFF_SECONDS: float = Field(default=0.5, ge=0)
 
     # ---- Storage ----
     STORAGE_BACKEND: Literal["local", "supabase"] = "local"
@@ -129,6 +159,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_AUTH_PER_MINUTE: int = 10
     RATE_LIMIT_EMAIL_PER_HOUR: int = 5
+    # Password-recovery requests per e-mail address (any account or none) per hour.
+    RATE_LIMIT_PASSWORD_RESET_PER_EMAIL_PER_HOUR: int = 3
     RATE_LIMIT_UPLOAD_PER_MINUTE: int = 10
     RATE_LIMIT_SEARCH_PER_MINUTE: int = 20
     RATE_LIMIT_RECOMMENDATION_PER_MINUTE: int = 20
@@ -178,6 +210,14 @@ class Settings(BaseSettings):
             raise ValueError("LOG_LEVEL must be CRITICAL, ERROR, WARNING, INFO or DEBUG")
         return value
 
+    @field_validator(
+        "REVENUECAT_ALLOW_SANDBOX", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTHORIZATION", mode="before"
+    )
+    @classmethod
+    def _empty_is_unset(cls, value: object) -> object:
+        # ".env.example" style "NAME=" lines mean "not configured".
+        return None if isinstance(value, str) and not value.strip() else value
+
     @model_validator(mode="after")
     def _weights_positive(self) -> Settings:
         weights = self.recommendation_weights
@@ -201,6 +241,81 @@ class Settings(BaseSettings):
     @property
     def supabase_url(self) -> str | None:
         return self.SUPABASE_URL.rstrip("/") if self.SUPABASE_URL else None
+
+    @property
+    def subscription_exempt_roles(self) -> set[str]:
+        return {r.strip().lower() for r in self.SUBSCRIPTION_EXEMPT_ROLES.split(",") if r.strip()}
+
+    @property
+    def revenuecat_allow_sandbox(self) -> bool:
+        if self.REVENUECAT_ALLOW_SANDBOX is None:
+            return not self.is_production
+        return self.REVENUECAT_ALLOW_SANDBOX
+
+    @staticmethod
+    def _csv(value: str) -> list[str]:
+        return [v.strip() for v in value.split(",") if v.strip()]
+
+    @property
+    def revenuecat_products_international(self) -> list[str]:
+        return self._csv(self.REVENUECAT_PRODUCT_INTERNATIONAL)
+
+    @property
+    def revenuecat_products_pakistan(self) -> list[str]:
+        return self._csv(self.REVENUECAT_PRODUCT_PAKISTAN)
+
+    @staticmethod
+    def _unquote(value: str | None) -> str:
+        """Whitespace and one pair of surrounding quotes removed (dashboards store pasted quotes literally)."""
+        value = (value or "").strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1].strip()
+        return value
+
+    @property
+    def password_reset_redirect_url(self) -> str | None:
+        """The single ``redirect_to`` used for every password-recovery e-mail: the app deep link
+        ``AUTH_PASSWORD_RESET_REDIRECT_URL`` (e.g. ``sharkhire://auth/reset-password``), as configured."""
+        return self._unquote(self.AUTH_PASSWORD_RESET_REDIRECT_URL) or None
+
+    def auth_redirect_warnings(self) -> list[str]:
+        """Redirect settings that make Supabase fall back to its Site URL (often localhost:3000).
+
+        Names only, never values. Logged at startup; never blocks boot.
+        """
+        warnings: list[str] = []
+        for name, value in (
+            ("AUTH_EMAIL_REDIRECT_URL", (self.AUTH_EMAIL_REDIRECT_URL or "").strip()),
+            ("AUTH_PASSWORD_RESET_REDIRECT_URL", self.password_reset_redirect_url or ""),
+        ):
+            if not value and name == "AUTH_PASSWORD_RESET_REDIRECT_URL":
+                warnings.append(
+                    "AUTH_PASSWORD_RESET_REDIRECT_URL is not set: POST /api/v1/auth/forgot-password returns "
+                    "503 password_reset_not_configured (set it to the app deep link, e.g. sharkhire://auth/reset-password)"
+                )
+            elif not value:
+                warnings.append(f"{name} is not set: Supabase e-mail links will open the project's Site URL")
+            elif "://" not in value:
+                warnings.append(f"{name} is not an absolute URL/deep link: Supabase will ignore it")
+            elif self.is_production and any(h in value.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")):  # noqa: S104
+                warnings.append(f"{name} points to a local address in production")
+        raw_reset = (self.AUTH_PASSWORD_RESET_REDIRECT_URL or "").strip()
+        if raw_reset and raw_reset != self._unquote(raw_reset):
+            warnings.append("AUTH_PASSWORD_RESET_REDIRECT_URL is wrapped in quotes: the quotes are ignored; remove them")
+        return warnings
+
+    def subscription_config_warnings(self) -> list[str]:
+        """Missing billing configuration (logged at startup; never blocks boot)."""
+        warnings: list[str] = []
+        if not self.SUBSCRIPTION_ENFORCEMENT_ENABLED:
+            return warnings
+        if not self.REVENUECAT_WEBHOOK_AUTHORIZATION:
+            warnings.append("REVENUECAT_WEBHOOK_AUTHORIZATION is not set: webhooks are rejected")
+        if not self.REVENUECAT_SECRET_API_KEY:
+            warnings.append("REVENUECAT_SECRET_API_KEY is not set: /subscriptions/sync and /restore are unavailable")
+        if not (self.revenuecat_products_international or self.revenuecat_products_pakistan):
+            warnings.append("REVENUECAT_PRODUCT_* are not set: /subscriptions/plans lists no product ids")
+        return warnings
 
     @property
     def jwt_issuer(self) -> str | None:

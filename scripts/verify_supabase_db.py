@@ -57,7 +57,7 @@ def main() -> int:
         insp = inspect(conn)
         tables = set(insp.get_table_names(schema="public"))
         expected = set(Base.metadata.tables)
-        check("all 16 application tables present", expected <= tables, f"missing={sorted(expected - tables)}" if expected - tables else f"{len(expected)} tables")
+        check(f"all {len(expected)} application tables present", expected <= tables, f"missing={sorted(expected - tables)}" if expected - tables else f"{len(expected)} tables")
         for name, table in sorted(Base.metadata.tables.items()):
             if name not in tables:
                 continue
@@ -81,7 +81,7 @@ def main() -> int:
         rls_off = conn.execute(text("""SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ANY(:t) AND NOT c.relrowsecurity"""),
             {"t": sorted(expected | {"alembic_version"})}).scalars().all()
-        check("RLS enabled on every SharkHire table", not rls_off, f"without RLS: {rls_off}" if rls_off else "17 tables")
+        check("RLS enabled on every SharkHire table", not rls_off, f"without RLS: {rls_off}" if rls_off else f"{len(expected) + 1} tables")
         policies = conn.execute(text("SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename = ANY(:t)"),
                                 {"t": sorted(expected)}).scalar()
         check("no permissive RLS policies on SharkHire tables (deny-all)", policies == 0, f"policies={policies}")

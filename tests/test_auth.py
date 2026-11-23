@@ -249,8 +249,12 @@ async def test_resend_verification(client, supabase):
 
 
 async def test_reset_password_with_bearer_token(client, supabase):
+    import time
+
     supabase.add("PUT", "/auth/v1/user", httpx.Response(200, json={"id": str(uuid.uuid4())}))
-    token = make_token()
+    supabase.add("POST", "/logout", httpx.Response(204))
+    # A recovery-link session (Supabase AMR "otp"); plain sign-in tokens are rejected.
+    token = make_token(extra={"amr": [{"method": "otp", "timestamp": int(time.time())}]})
     r = await client.post("/api/v1/auth/reset-password", json={"new_password": STRONG}, headers=auth_header(token))
     assert r.status_code == 200
     assert supabase.requests[-1].headers["Authorization"] == f"Bearer {token}"

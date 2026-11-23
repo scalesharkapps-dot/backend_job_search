@@ -69,7 +69,20 @@ stateless JWT and remains valid until it expires (≤ 1h); that's why local dele
 ## 8. Email verification
 Supabase sends the email; the link opens `AUTH_EMAIL_REDIRECT_URL` (e.g. `sharkhire://auth/callback`) — register this
 deep link in AndroidManifest / iOS URL types and in Supabase → Auth → URL configuration.
-Resend: `POST /auth/resend-verification {"email": ...}` (generic response, 5/hour).
+Resend: `POST /auth/resend-verification {"email": ...}` — at most **2 resends** per verification cycle
+(1 initial + 2 = 3 e-mails), enforced server-side in PostgreSQL per e-mail address, 60 s cooldown between e-mails.
+
+| Status | `error.code` | Meaning / UI |
+|---|---|---|
+| 200 | — | sent; show `data.remaining_attempts` (also `max_resends`, `cooldown_seconds`) |
+| 429 | `resend_limit_reached` | message is exactly "You've reached the maximum resend limit. Please try again later."; `data.remaining_attempts` = 0; `Retry-After` = seconds until a new cycle (24 h) |
+| 429 | `resend_cooldown` | wait `Retry-After` seconds; `data.remaining_attempts` still available |
+| 429 | `rate_limited` | per-IP or Supabase e-mail rate limit (not counted as an attempt) |
+| 409 | `email_already_verified` | go to sign-in |
+| 503 | `auth_unavailable` | Supabase unreachable / rejected (not counted as an attempt) |
+
+Registering again with an unverified e-mail does not reset the limit (it counts as a resend; once the limit is
+reached no further e-mail is sent, but the usual `201` "check your email" response is returned).
 
 ## 9–11. Forgot / reset password
 1. `POST /auth/forgot-password {"email": ...}` → always "If an account exists…".
@@ -77,8 +90,14 @@ Resend: `POST /auth/resend-verification {"email": ...}` (generic response, 5/hou
    carries either an `access_token` (in the URL fragment) or a `token_hash` query parameter.
 3. Call `POST /auth/reset-password`:
    - with fragment token: header `Authorization: Bearer <access_token from link>`, body `{"new_password": "..."}`
+     (or put the token in the body as `"access_token"`)
    - with token hash: body `{"new_password": "...", "token_hash": "<token_hash>"}`
-4. Then sign in again. Never log the recovery token.
+   - only a recovery-link token opened within the last hour is accepted, not the app's normal session token
+4. `200` = `data.status == "SUCCESS"`. All sessions were revoked, so clear stored tokens and sign in again.
+   Never log the recovery token.
+5. Errors: `401 RECOVERY_LINK_INVALID_OR_EXPIRED` (expired, used or not a recovery link: offer a new link),
+   `422 PASSWORD_POLICY_VIOLATION` (`error.details[].field == "new_password"`), `422 PASSWORD_UNCHANGED`,
+   `429 RATE_LIMITED` (wait for `Retry-After`). Forgot-password returns `429 RATE_LIMITED` when throttled.
 
 ## 12. Expired sessions
 `401` with `error.code`:

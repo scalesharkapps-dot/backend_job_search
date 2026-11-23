@@ -14,6 +14,8 @@ from app.core.database import get_db
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.core.security import TokenClaims, verify_access_token
 from app.models.user import User, UserRole
+from app.services.billing.revenuecat import RevenueCatClient, get_revenuecat_client
+from app.services.billing.subscriptions import evaluate_access
 from app.services.user_service import sync_user
 
 bearer_scheme = HTTPBearer(auto_error=False, description="Supabase access token")
@@ -101,6 +103,30 @@ def require_role(*roles: UserRole) -> Callable[..., Coroutine[Any, Any, User]]:
 
 
 require_active_user = get_current_user
+
+SUBSCRIPTION_REQUIRED_MESSAGE = "Your free trial or subscription has ended. Subscribe to continue using SharkHire."
+
+
+async def require_app_access(
+    user: CurrentUser,
+    db: DBSession,
+    client: Annotated[RevenueCatClient, Depends(get_revenuecat_client)],
+) -> User:
+    """Paywall for the whole app: an active 3-day trial or a verified ``app_access`` entitlement.
+
+    Decided only from server-side data (trial table + RevenueCat-verified subscription
+    rows). Raises ``403 subscription_required`` with the reason in ``data``/``details``.
+    """
+    decision = await evaluate_access(db, user, client)
+    if not decision.allowed:
+        summary = decision.summary()
+        raise PermissionDeniedError(
+            SUBSCRIPTION_REQUIRED_MESSAGE, code="subscription_required", details=summary, data=summary
+        )
+    return user
+
+
+AppUser = Annotated[User, Depends(require_app_access)]
 JobSeekerUser = Annotated[User, Depends(require_role(UserRole.JOB_SEEKER))]
 EmployerUser = Annotated[User, Depends(require_role(UserRole.EMPLOYER))]
 AdminUser = Annotated[User, Depends(require_role(UserRole.ADMIN))]

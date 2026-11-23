@@ -1,5 +1,6 @@
 """Import every model so ``Base.metadata`` is complete (Alembic, tests)."""
 
+from app.models.account_deletion import DeletedAccount
 from app.models.application import (
     Application,
     ApplicationStatusHistory,
@@ -7,6 +8,7 @@ from app.models.application import (
     SavedJob,
 )
 from app.models.base import Base
+from app.models.email_verification import EmailVerificationTracker
 from app.models.employer import (
     AdminAuditLog,
     EmployerProfile,
@@ -19,6 +21,12 @@ from app.models.recommendation import (
     JobRecommendation,
     UserRecommendationPreferences,
 )
+from app.models.subscription import (
+    PaymentHistory,
+    Subscription,
+    SubscriptionEvent,
+    UserTrial,
+)
 from app.models.user import User, UserRole
 
 __all__ = [
@@ -27,6 +35,8 @@ __all__ = [
     "ApplicationStatusHistory",
     "Base",
     "CVExtractedData",
+    "DeletedAccount",
+    "EmailVerificationTracker",
     "EmployerProfile",
     "EmployerVerificationRequest",
     "Interview",
@@ -34,11 +44,15 @@ __all__ = [
     "JobRecommendation",
     "JobSearchCache",
     "JobSource",
+    "PaymentHistory",
     "Report",
     "SavedJob",
+    "Subscription",
+    "SubscriptionEvent",
     "User",
     "UserCV",
     "UserProfile",
     "UserRecommendationPreferences",
     "UserRole",
+    "UserTrial",
 ]

@@ -106,7 +106,9 @@ class SupabaseAuthClient:
         code = _error_code(payload)
         message = _error_message(payload).lower()
         status = response.status_code
-        logger.info("Supabase Auth %s failed: status=%s code=%s", context, status, code or "-")
+        # E-mail sending and upstream outages must be visible in deployment logs (no addresses or secrets).
+        level = logging.WARNING if status >= 500 or context in {"recover", "resend", "signup"} else logging.INFO
+        logger.log(level, "Supabase Auth %s failed: status=%s code=%s", context, status, code or "-")
 
         if status == 429 or code == "over_request_rate_limit" or code == "over_email_send_rate_limit":
             retry = response.headers.get("retry-after")
@@ -116,6 +118,11 @@ class SupabaseAuthClient:
             )
         if code in {"user_already_exists", "email_exists"} or "already registered" in message:
             raise ConflictError("An account with this email already exists.", code="email_exists")
+        # Before the weak-password text match: Supabase's message is "New password should be different...".
+        if code == "same_password":
+            raise ValidationAppError(
+                "The new password must differ from the old password.", code="same_password"
+            )
         if code == "weak_password" or "password should" in message:
             raise ValidationAppError(
                 "Password does not meet the security requirements.", code="weak_password"
@@ -130,13 +137,26 @@ class SupabaseAuthClient:
             raise AuthenticationError("Invalid email or password.", code="invalid_credentials")
         if code in {"refresh_token_not_found", "refresh_token_already_used", "session_not_found"}:
             raise AuthenticationError("The session is invalid or has expired.", code="invalid_session")
+        if code == "email_address_not_authorized":
+            # Supabase's built-in mailer only delivers to project team members: configure custom SMTP.
+            logger.error(
+                "Supabase refused to send an auth e-mail (email_address_not_authorized): "
+                "configure custom SMTP in Supabase -> Authentication -> Emails"
+            )
+            raise ServiceUnavailableError(
+                "We couldn't send the email right now. Please try again later.", code="email_delivery_unavailable"
+            )
+        if code == "email_address_invalid":
+            raise ValidationAppError("This email address can't receive email.", code="validation_error")
         if code in {"signup_disabled", "email_provider_disabled"}:
             raise AppError("Sign-up is currently disabled.", code="signup_disabled", status_code=403)
         if code in {"otp_expired", "bad_jwt", "flow_state_expired"}:
             raise AuthenticationError("The link or token is invalid or has expired.", code="invalid_token")
-        if code == "same_password":
-            raise ValidationAppError(
-                "The new password must differ from the old password.", code="same_password"
+        if code in {"reauthentication_needed", "reauthentication_not_valid"}:
+            raise AppError(
+                "Please confirm your password again to continue.",
+                code="reauthentication_required",
+                status_code=403,
             )
         if code == "validation_failed" or status == 422:
             raise ValidationAppError("The submitted data was rejected.", code="validation_error")
@@ -203,19 +223,53 @@ class SupabaseAuthClient:
         return False
 
     async def resend_signup_confirmation(self, email: str) -> None:
-        body: dict[str, Any] = {"type": "signup", "email": email}
-        if self.settings.AUTH_EMAIL_REDIRECT_URL:
-            body["options"] = {"emailRedirectTo": self.settings.AUTH_EMAIL_REDIRECT_URL}
-        response = await self._request("POST", "/resend", json=body)
+        """Ask Supabase to send a new signup confirmation e-mail.
+
+        The redirect URL must be the ``redirect_to`` *query parameter* (as for
+        ``/signup``). GoTrue ignores an ``options.emailRedirectTo`` body field -- that
+        is the supabase-js SDK option name, not the REST API -- so resent links
+        would fall back to the project's Site URL instead of the app deep link.
+        """
+        params = (
+            {"redirect_to": self.settings.AUTH_EMAIL_REDIRECT_URL}
+            if self.settings.AUTH_EMAIL_REDIRECT_URL
+            else None
+        )
+        response = await self._request(
+            "POST", "/resend", json={"type": "signup", "email": email}, params=params
+        )
+        if response.status_code >= 400:
+            payload = self._json(response)
+            code = _error_code(payload)
+            message = _error_message(payload).lower()
+            if code == "email_already_confirmed" or "already confirmed" in message:
+                logger.info("Supabase Auth resend skipped: email already confirmed")
+                raise ConflictError(
+                    "This email address is already verified. Please sign in.",
+                    code="email_already_verified",
+                )
         self._raise_for(response, "resend")
 
     async def send_password_recovery(self, email: str) -> None:
-        params = (
-            {"redirect_to": self.settings.AUTH_PASSWORD_RESET_REDIRECT_URL}
-            if self.settings.AUTH_PASSWORD_RESET_REDIRECT_URL
-            else None
+        """Send the recovery e-mail (implicit flow: no PKCE ``code_challenge`` is sent).
+
+        ``redirect_to`` is always the configured app deep link ``AUTH_PASSWORD_RESET_REDIRECT_URL``
+        (e.g. ``sharkhire://auth/reset-password``), passed unchanged. Without one Supabase would
+        fall back to its Site URL (default http://localhost:3000), so the request is refused instead.
+        Supabase answers 200 for unknown e-mail addresses (no account enumeration).
+        """
+        redirect = self.settings.password_reset_redirect_url
+        if not redirect:
+            logger.error(
+                "AUTH_PASSWORD_RESET_REDIRECT_URL is not set: forgot-password is disabled "
+                "(503 password_reset_not_configured). Set it to the app deep link, e.g. sharkhire://auth/reset-password"
+            )
+            raise NotConfiguredError(
+                "Password reset is temporarily unavailable.", code="password_reset_not_configured"
+            )
+        response = await self._request(
+            "POST", "/recover", json={"email": email}, params={"redirect_to": redirect}
         )
-        response = await self._request("POST", "/recover", json={"email": email}, params=params)
         self._raise_for(response, "recover")
 
     async def verify_recovery_token_hash(self, token_hash: str) -> dict[str, Any]:
@@ -223,6 +277,17 @@ class SupabaseAuthClient:
             "POST", "/verify", json={"type": "recovery", "token_hash": token_hash}
         )
         self._raise_for(response, "verify")
+        return self._json(response)
+
+    async def verify_email_token_hash(self, token_hash: str, otp_type: str = "email") -> dict[str, Any]:
+        """Confirm a signup/e-mail link (``token_hash`` from the e-mail template) and get a session.
+
+        Expired, already used and unknown tokens all return ``otp_expired`` from Supabase.
+        """
+        response = await self._request(
+            "POST", "/verify", json={"type": otp_type, "token_hash": token_hash}
+        )
+        self._raise_for(response, "verify_email")
         return self._json(response)
 
     async def update_password(self, access_token: str, new_password: str) -> dict[str, Any]:
@@ -242,6 +307,30 @@ class SupabaseAuthClient:
             "PUT", f"/admin/users/{user_id}", json=attributes, headers=headers
         )
         self._raise_for(response, "admin_update_user")
+        return True
+
+    async def admin_delete_user(self, user_id: str) -> bool:
+        """Permanently delete an Auth user (server-side, service-role key only).
+
+        Supabase removes the user's sessions and refresh tokens with it. Returns
+        False when the user no longer exists (already deleted -- safe to retry).
+        """
+        if not self.settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise NotConfiguredError(
+                "Account deletion is not configured on the server.",
+                code="account_deletion_not_configured",
+            )
+        key = self.settings.SUPABASE_SERVICE_ROLE_KEY.get_secret_value()
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        response = await self._request("DELETE", f"/admin/users/{user_id}", headers=headers)
+        if response.status_code == 404:
+            return False
+        if response.status_code in (401, 403):
+            logger.error("Supabase Auth rejected the service-role key for admin user deletion")
+            raise ServiceUnavailableError(
+                "Account deletion is temporarily unavailable.", code="auth_unavailable"
+            )
+        self._raise_for(response, "admin_delete_user")
         return True
 
 

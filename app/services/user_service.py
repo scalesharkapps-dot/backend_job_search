@@ -9,7 +9,8 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError
+from app.core.exceptions import AuthenticationError, ConflictError
+from app.models.account_deletion import DeletedAccount
 from app.models.base import utcnow
 from app.models.user import User, UserRole
 
@@ -37,6 +38,9 @@ async def sync_user(
     user = await db.get(User, user_id)
     changed = False
     if user is None:
+        if await db.get(DeletedAccount, user_id) is not None:
+            # A token issued before the account was deleted: never resurrect the account.
+            raise AuthenticationError("This account has been deleted.", code="account_deleted")
         if not email:
             # Supabase user tokens always carry email for email/password accounts.
             email = f"{user_id}@users.noreply.sharkhire"

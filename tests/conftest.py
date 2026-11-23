@@ -24,7 +24,7 @@ os.environ.update(
         "SUPABASE_JWKS_URL": "",
         "SUPABASE_JWT_AUDIENCE": "authenticated",
         "AUTH_EMAIL_REDIRECT_URL": "",
-        "AUTH_PASSWORD_RESET_REDIRECT_URL": "",
+        "AUTH_PASSWORD_RESET_REDIRECT_URL": "sharkhire://auth/reset-password",
         "APP_ENV": "testing",
         "DEBUG": "false",
         "DATABASE_URL": "sqlite+aiosqlite://",
@@ -254,3 +254,7 @@ def user_factory(db: AsyncSession) -> Callable[..., Any]:
         return await create_user(db, role, **kw)
 
     return factory
+
+
+# Billing fixtures (clock, billing_settings, revenuecat) shared by the trial/subscription suites.
+from tests.billing_helpers import billing_settings, clock, revenuecat  # noqa: E402, F401
