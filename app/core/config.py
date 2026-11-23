@@ -159,6 +159,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_AUTH_PER_MINUTE: int = 10
     RATE_LIMIT_EMAIL_PER_HOUR: int = 5
+    # Password-recovery requests per e-mail address (any account or none) per hour.
+    RATE_LIMIT_PASSWORD_RESET_PER_EMAIL_PER_HOUR: int = 3
     RATE_LIMIT_UPLOAD_PER_MINUTE: int = 10
     RATE_LIMIT_SEARCH_PER_MINUTE: int = 20
     RATE_LIMIT_RECOMMENDATION_PER_MINUTE: int = 20
@@ -262,14 +264,22 @@ class Settings(BaseSettings):
     def revenuecat_products_pakistan(self) -> list[str]:
         return self._csv(self.REVENUECAT_PRODUCT_PAKISTAN)
 
+    @property
+    def password_reset_redirect_url(self) -> str | None:
+        """The single ``redirect_to`` used for every password-recovery e-mail: the app deep link
+        ``AUTH_PASSWORD_RESET_REDIRECT_URL`` (e.g. ``sharkhire://auth/reset-password``), as configured."""
+        return (self.AUTH_PASSWORD_RESET_REDIRECT_URL or "").strip() or None
+
     def auth_redirect_warnings(self) -> list[str]:
         """Redirect settings that make Supabase fall back to its Site URL (often localhost:3000).
 
         Names only, never values. Logged at startup; never blocks boot.
         """
         warnings: list[str] = []
-        for name in ("AUTH_EMAIL_REDIRECT_URL", "AUTH_PASSWORD_RESET_REDIRECT_URL"):
-            value = (getattr(self, name) or "").strip()
+        for name, value in (
+            ("AUTH_EMAIL_REDIRECT_URL", (self.AUTH_EMAIL_REDIRECT_URL or "").strip()),
+            ("AUTH_PASSWORD_RESET_REDIRECT_URL", self.password_reset_redirect_url or ""),
+        ):
             if not value:
                 warnings.append(f"{name} is not set: Supabase e-mail links will open the project's Site URL")
             elif "://" not in value:

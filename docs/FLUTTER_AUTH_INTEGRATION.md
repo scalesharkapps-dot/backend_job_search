@@ -90,8 +90,14 @@ reached no further e-mail is sent, but the usual `201` "check your email" respon
    carries either an `access_token` (in the URL fragment) or a `token_hash` query parameter.
 3. Call `POST /auth/reset-password`:
    - with fragment token: header `Authorization: Bearer <access_token from link>`, body `{"new_password": "..."}`
+     (or put the token in the body as `"access_token"`)
    - with token hash: body `{"new_password": "...", "token_hash": "<token_hash>"}`
-4. Then sign in again. Never log the recovery token.
+   - only a recovery-link token opened within the last hour is accepted, not the app's normal session token
+4. `200` = `data.status == "SUCCESS"`. All sessions were revoked, so clear stored tokens and sign in again.
+   Never log the recovery token.
+5. Errors: `401 RECOVERY_LINK_INVALID_OR_EXPIRED` (expired, used or not a recovery link: offer a new link),
+   `422 PASSWORD_POLICY_VIOLATION` (`error.details[].field == "new_password"`), `422 PASSWORD_UNCHANGED`,
+   `429 RATE_LIMITED` (wait for `Retry-After`). Forgot-password returns `429 RATE_LIMITED` when throttled.
 
 ## 12. Expired sessions
 `401` with `error.code`:

@@ -24,7 +24,7 @@ os.environ.update(
         "SUPABASE_JWKS_URL": "",
         "SUPABASE_JWT_AUDIENCE": "authenticated",
         "AUTH_EMAIL_REDIRECT_URL": "",
-        "AUTH_PASSWORD_RESET_REDIRECT_URL": "",
+        "AUTH_PASSWORD_RESET_REDIRECT_URL": "sharkhire://auth/reset-password",
         "APP_ENV": "testing",
         "DEBUG": "false",
         "DATABASE_URL": "sqlite+aiosqlite://",

@@ -116,6 +116,11 @@ class SupabaseAuthClient:
             )
         if code in {"user_already_exists", "email_exists"} or "already registered" in message:
             raise ConflictError("An account with this email already exists.", code="email_exists")
+        # Before the weak-password text match: Supabase's message is "New password should be different...".
+        if code == "same_password":
+            raise ValidationAppError(
+                "The new password must differ from the old password.", code="same_password"
+            )
         if code == "weak_password" or "password should" in message:
             raise ValidationAppError(
                 "Password does not meet the security requirements.", code="weak_password"
@@ -139,10 +144,6 @@ class SupabaseAuthClient:
                 "Please confirm your password again to continue.",
                 code="reauthentication_required",
                 status_code=403,
-            )
-        if code == "same_password":
-            raise ValidationAppError(
-                "The new password must differ from the old password.", code="same_password"
             )
         if code == "validation_failed" or status == 422:
             raise ValidationAppError("The submitted data was rejected.", code="validation_error")
@@ -237,12 +238,22 @@ class SupabaseAuthClient:
         self._raise_for(response, "resend")
 
     async def send_password_recovery(self, email: str) -> None:
-        params = (
-            {"redirect_to": self.settings.AUTH_PASSWORD_RESET_REDIRECT_URL}
-            if self.settings.AUTH_PASSWORD_RESET_REDIRECT_URL
-            else None
+        """Send the recovery e-mail (implicit flow: no PKCE ``code_challenge`` is sent).
+
+        ``redirect_to`` is always the configured app deep link ``AUTH_PASSWORD_RESET_REDIRECT_URL``
+        (e.g. ``sharkhire://auth/reset-password``), passed unchanged. Without one Supabase would
+        fall back to its Site URL (default http://localhost:3000), so the request is refused instead.
+        Supabase answers 200 for unknown e-mail addresses (no account enumeration).
+        """
+        redirect = self.settings.password_reset_redirect_url
+        if not redirect:
+            logger.error("Password recovery requested but no reset redirect URL is configured")
+            raise NotConfiguredError(
+                "Password reset is temporarily unavailable.", code="password_reset_not_configured"
+            )
+        response = await self._request(
+            "POST", "/recover", json={"email": email}, params={"redirect_to": redirect}
         )
-        response = await self._request("POST", "/recover", json={"email": email}, params=params)
         self._raise_for(response, "recover")
 
     async def verify_recovery_token_hash(self, token_hash: str) -> dict[str, Any]:

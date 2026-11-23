@@ -28,10 +28,92 @@ For confirmation templates that hand `{{ .TokenHash }}` to the app (e.g.
 `200` = session (same shape as `/login`), local user marked `email_verified=true`.
 `401 invalid_token` = expired, already used or unknown link (Supabase answers `otp_expired` for all three).
 
-### `POST /forgot-password` (unchanged)
-Same response whether or not the e-mail exists. The link goes to `AUTH_PASSWORD_RESET_REDIRECT_URL`.
-`/reset-password` (unchanged) accepts the recovery `token_hash` or the recovery access token. Reused or expired
-tokens -> `401 invalid_token`.
+### Password recovery: supported flow
+
+**Implicit flow** (plus an optional token-hash template). The backend calls Supabase `POST /auth/v1/recover`
+with `{"email"}` only and no PKCE `code_challenge`, so Supabase does not use PKCE. Source: GoTrue `recover.go`
+uses PKCE only when a `code_challenge` is sent.
+
+1. `POST /auth/forgot-password` -> Supabase e-mails a link. Every request sends
+   `redirect_to = AUTH_PASSWORD_RESET_REDIRECT_URL` unchanged (the Flutter deep link, e.g.
+   `sharkhire://auth/reset-password`). When it is not configured the backend returns `503` and sends nothing,
+   so it never omits `redirect_to` or lets Supabase fall back to its Site URL.
+2. The link opens Supabase `/auth/v1/verify`, which redirects to the deep link:
+   `sharkhire://auth/reset-password#access_token=…&refresh_token=…&expires_in=3600&type=recovery`.
+   An expired or used link redirects with `#error=access_denied&error_code=otp_expired&error_description=…`.
+3. Android/iOS open the SharkHire app. It reads `access_token` from the URL **fragment** and calls
+   `POST /auth/reset-password`.
+
+PKCE (`?code=` links) is **not** supported. The code verifier would have to come from the client that started
+the request, and the backend starts it. If the e-mail template is changed to
+`sharkhire://auth/reset-password?token_hash={{ .TokenHash }}&type=recovery`, send `token_hash` instead.
+A custom-scheme link only opens on a phone with the app installed. On a desktop mail client it cannot open.
+
+### `POST /forgot-password` (no auth)
+```bash
+curl -X POST "$API/api/v1/auth/forgot-password" -H "Content-Type: application/json" \
+     -d '{"email":"user@example.com"}'
+```
+`200` is the same for registered and unregistered addresses (Supabase also answers `200 {}` for unknown ones):
+```json
+{"success": true, "message": "If an account exists for this email, a reset link has been sent.", "data": null, "error": null}
+```
+| Status | `error.code` | When |
+|---|---|---|
+| 422 | `validation_error` | not a valid e-mail (`EmailStr`) |
+| 429 | `RATE_LIMITED` | per-IP (`RATE_LIMIT_EMAIL_PER_HOUR`) or per-address (`RATE_LIMIT_PASSWORD_RESET_PER_EMAIL_PER_HOUR`) limit, or Supabase `429` / `over_email_send_rate_limit`. Message "Please wait a minute before trying again.", with a `Retry-After` header |
+| 503 | `auth_unavailable` | Supabase down or erroring: reported as an error, never as success |
+| 503 | `password_reset_not_configured` | no redirect configured (the backend refuses rather than letting Supabase use its Site URL) |
+
+Per-address keys are SHA-256 hashes. Limits are per process (in memory), so with N workers the effective limit is
+N times higher. E-mail addresses, passwords and tokens are never logged.
+
+### `POST /reset-password` (recovery token from the deep link)
+Existing Flutter contract (unchanged request shape):
+```bash
+curl -X POST "$API/api/v1/auth/reset-password" -H "Content-Type: application/json" \
+     -H "Authorization: Bearer <access_token from the deep-link fragment>" \
+     -d '{"new_password":"NewSecurePassword123"}'
+```
+Also accepted: the token in the body, `{"access_token": "…", "new_password": "…"}`, or
+`{"token_hash": "…", "new_password": "…"}` for a token-hash template.
+```json
+{"success": true, "message": "Password updated successfully. Please sign in again.",
+ "data": {"status": "SUCCESS", "sessions_revoked": true}, "error": null}
+```
+How the token is checked:
+1. Signature, issuer, audience and expiry are verified locally (Supabase JWKS).
+2. It must be a **recovery session**. Its `amr` claim must contain `otp`, `magiclink` or `recovery` (GoTrue's own
+   `Session.IsRecovery()` rule), dated within the last hour. An ordinary sign-in token (`amr: password`) is rejected.
+3. The password is updated with Supabase `PUT /auth/v1/user` using that recovery session.
+4. All sessions are revoked (`POST /logout?scope=global`). Supabase only revokes *other* sessions on a password
+   change, so without this step the same link could be used again. Afterwards Supabase rejects the token with
+   `403 session_not_found`.
+
+| Status | `error.code` | When |
+|---|---|---|
+| 400 | `RECOVERY_TOKEN_REQUIRED` | neither `access_token` nor `token_hash` |
+| 401 | `RECOVERY_LINK_INVALID_OR_EXPIRED` | invalid, expired, already used, not a recovery session, or older than 1 hour |
+| 422 | `PASSWORD_POLICY_VIOLATION` | 8–72 characters, upper and lower case, a digit, not a common password, not the account e-mail. `error.details` = `[{"field": "new_password", "message": …, "type": "password_policy"}]` |
+| 422 | `PASSWORD_UNCHANGED` | same as the current password (Supabase `same_password`) |
+| 429 | `RATE_LIMITED` | per-IP limit (`RATE_LIMIT_AUTH_PER_MINUTE`) or Supabase rate limit, with `Retry-After` |
+
+**App contract:** the app handles `sharkhire://auth/reset-password`. When the fragment contains `error_code`,
+show "link expired" and offer forgot-password again. Otherwise take `access_token` from the fragment and send it as
+the Bearer token, or as `access_token`, with the new password. On `200`, clear any stored session (all sessions were
+revoked) and go to sign-in. On `401 RECOVERY_LINK_INVALID_OR_EXPIRED`, show "link expired". This is not a
+"session expired, log out" case.
+
+### Required settings (outside this repository)
+* **Render:** `AUTH_PASSWORD_RESET_REDIRECT_URL=sharkhire://auth/reset-password` (already set according to the
+  team; not verified here). Startup logs `Auth e-mail configuration: …` when it's missing or not an absolute
+  URL/deep link.
+* **Supabase -> Authentication -> URL Configuration -> Redirect URLs:** must contain
+  `sharkhire://auth/reset-password` (or `sharkhire://**`). Otherwise Supabase silently uses the **Site URL**,
+  the localhost redirect. Set the Site URL itself to a real production URL, never `http://localhost:3000`.
+* **Supabase -> Email Templates -> Reset password:** keep `{{ .ConfirmationURL }}` (not `{{ .SiteURL }}`).
+* **App:** `sharkhire` scheme registered (AndroidManifest intent filter, iOS URL Types). If the app calls
+  Supabase directly for recovery, it must pass the same redirect.
 
 ### `POST /change-password` (Bearer token)
 ```json
@@ -82,7 +164,8 @@ account.
 
 ## 3. Configuration
 
-No new environment variables. Uses existing `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (already required for
+New: `RATE_LIMIT_PASSWORD_RESET_PER_EMAIL_PER_HOUR` (default 3). `AUTH_PASSWORD_RESET_REDIRECT_URL` is now required for
+forgot-password. Also uses existing `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (already required for
 Supabase Storage), `AUTH_EMAIL_REDIRECT_URL`, `AUTH_PASSWORD_RESET_REDIRECT_URL`, storage buckets.
 Migration: `alembic upgrade head` (0011 adds `deleted_accounts`).
 

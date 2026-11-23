@@ -99,7 +99,7 @@ def test_redirect_configuration_warnings():
                          AUTH_PASSWORD_RESET_REDIRECT_URL="sharkhire://auth/reset-password")
     assert prod.auth_redirect_warnings() == ["AUTH_EMAIL_REDIRECT_URL points to a local address in production"]
     ok = load_settings(_env_file=None, AUTH_EMAIL_REDIRECT_URL="sharkhire://auth/callback",
-                       AUTH_PASSWORD_RESET_REDIRECT_URL="https://app.sharkhire.com/reset")
+                       AUTH_PASSWORD_RESET_REDIRECT_URL="sharkhire://auth/reset-password")
     assert ok.auth_redirect_warnings() == []
     assert "localhost:3000" not in json.dumps(load_settings(_env_file=None).model_dump(mode="json"))
 
@@ -119,7 +119,7 @@ async def test_forgot_password_uses_reset_redirect_and_hides_existence(client, s
 async def test_reset_with_reused_recovery_token(client, supabase):
     supabase.add("POST", "/verify", httpx.Response(403, json={"error_code": "otp_expired"}))
     r = await client.post("/api/v1/auth/reset-password", json={"new_password": STRONG, "token_hash": "already-used-1"})
-    assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_token"
+    assert r.status_code == 401 and r.json()["error"]["code"] == "RECOVERY_LINK_INVALID_OR_EXPIRED"
     assert not requests_to(supabase, "PUT", "/user")
 
 

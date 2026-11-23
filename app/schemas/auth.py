@@ -18,8 +18,8 @@ _COMMON_PASSWORDS = {
 }
 
 
-def validate_password_policy(password: str) -> str:
-    """Enforce the SharkHire password policy (Supabase may add its own rules)."""
+def password_policy_problems(password: str, email: str | None = None) -> list[str]:
+    """Unmet SharkHire password rules (Supabase may add its own rules)."""
     min_len = get_settings().PASSWORD_MIN_LENGTH
     problems = []
     if len(password) < min_len:
@@ -34,6 +34,14 @@ def validate_password_policy(password: str) -> str:
         problems.append("a digit")
     if password.lower() in _COMMON_PASSWORDS:
         problems.append("not a commonly used password")
+    if email and password.strip().lower() == email.strip().lower():
+        problems.append("not your e-mail address")
+    return problems
+
+
+def validate_password_policy(password: str) -> str:
+    """Enforce the SharkHire password policy (Supabase may add its own rules)."""
+    problems = password_policy_problems(password)
     if problems:
         raise ValueError("Password must contain " + ", ".join(problems))
     return password
@@ -69,19 +77,17 @@ class EmailRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    """Set a new password.
+    """Set a new password after following a recovery link.
 
-    Supply either a Bearer recovery/access token in the Authorization header, or
-    the ``token_hash`` from the recovery email link.
+    Supply ONE recovery credential from the deep link: the ``access_token`` from its URL
+    fragment as ``Authorization: Bearer <token>`` (existing Flutter contract) or in the body,
+    or the ``token_hash`` (custom e-mail template). The password policy is checked by the endpoint so
+    that violations return ``PASSWORD_POLICY_VIOLATION`` with field details.
     """
 
     new_password: str = Field(min_length=1, max_length=128)
+    access_token: str | None = Field(default=None, min_length=20, max_length=8192)
     token_hash: str | None = Field(default=None, min_length=8, max_length=512)
-
-    @field_validator("new_password")
-    @classmethod
-    def _policy(cls, value: str) -> str:
-        return validate_password_policy(value)
 
 
 class VerifyEmailRequest(BaseModel):
