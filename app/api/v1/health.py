@@ -127,3 +127,29 @@ async def storage_health() -> JSONResponse:
         logger.warning("Storage health check failed: %s", type(exc).__name__)
         return JSONResponse(status_code=503, content={**body, "status": "unavailable", "storage": "unreachable"})
     return JSONResponse(status_code=200, content={**body, "status": "ok", "storage": "connected"})
+
+
+@router.get("/health/auth", summary="Auth e-mail configuration status (no secrets)")
+async def auth_config_health() -> JSONResponse:
+    """Whether the variables the auth e-mail flows need are set. Never returns their values.
+
+    503 when forgot-password cannot work (it would answer ``503 password_reset_not_configured``).
+    Does not contact Supabase, so it cannot detect Dashboard settings (Redirect URLs, SMTP).
+    """
+    s = get_settings()
+    reset_status = "configured" if s.password_reset_redirect_url else "missing AUTH_PASSWORD_RESET_REDIRECT_URL"
+    supabase_auth = (
+        "configured" if s.supabase_url and s.SUPABASE_ANON_KEY else "missing SUPABASE_URL or SUPABASE_ANON_KEY"
+    )
+    email_redirect = "configured" if (s.AUTH_EMAIL_REDIRECT_URL or "").strip() else "missing AUTH_EMAIL_REDIRECT_URL"
+    healthy = reset_status == "configured" and supabase_auth == "configured"
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "misconfigured",
+            "password_reset": reset_status,
+            "supabase_auth": supabase_auth,
+            "email_verification_redirect": email_redirect,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+    )

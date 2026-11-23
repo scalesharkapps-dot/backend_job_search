@@ -63,7 +63,9 @@ curl -X POST "$API/api/v1/auth/forgot-password" -H "Content-Type: application/js
 | 422 | `validation_error` | not a valid e-mail (`EmailStr`) |
 | 429 | `RATE_LIMITED` | per-IP (`RATE_LIMIT_EMAIL_PER_HOUR`) or per-address (`RATE_LIMIT_PASSWORD_RESET_PER_EMAIL_PER_HOUR`) limit, or Supabase `429` / `over_email_send_rate_limit`. Message "Please wait a minute before trying again.", with a `Retry-After` header |
 | 503 | `auth_unavailable` | Supabase down or erroring: reported as an error, never as success |
-| 503 | `password_reset_not_configured` | no redirect configured (the backend refuses rather than letting Supabase use its Site URL) |
+| 503 | `password_reset_not_configured` | `AUTH_PASSWORD_RESET_REDIRECT_URL` not set (the backend refuses rather than letting Supabase use its Site URL). Check `GET /api/v1/health/auth` |
+| 503 | `email_delivery_unavailable` | Supabase refused to send (`email_address_not_authorized`: the built-in mailer only mails project team members, so configure custom SMTP) |
+| 422 | `validation_error` | Supabase rejected the address (`email_address_invalid`) |
 
 Per-address keys are SHA-256 hashes. Limits are per process (in memory), so with N workers the effective limit is
 N times higher. E-mail addresses, passwords and tokens are never logged.

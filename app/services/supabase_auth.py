@@ -106,7 +106,9 @@ class SupabaseAuthClient:
         code = _error_code(payload)
         message = _error_message(payload).lower()
         status = response.status_code
-        logger.info("Supabase Auth %s failed: status=%s code=%s", context, status, code or "-")
+        # E-mail sending and upstream outages must be visible in deployment logs (no addresses or secrets).
+        level = logging.WARNING if status >= 500 or context in {"recover", "resend", "signup"} else logging.INFO
+        logger.log(level, "Supabase Auth %s failed: status=%s code=%s", context, status, code or "-")
 
         if status == 429 or code == "over_request_rate_limit" or code == "over_email_send_rate_limit":
             retry = response.headers.get("retry-after")
@@ -135,6 +137,17 @@ class SupabaseAuthClient:
             raise AuthenticationError("Invalid email or password.", code="invalid_credentials")
         if code in {"refresh_token_not_found", "refresh_token_already_used", "session_not_found"}:
             raise AuthenticationError("The session is invalid or has expired.", code="invalid_session")
+        if code == "email_address_not_authorized":
+            # Supabase's built-in mailer only delivers to project team members: configure custom SMTP.
+            logger.error(
+                "Supabase refused to send an auth e-mail (email_address_not_authorized): "
+                "configure custom SMTP in Supabase -> Authentication -> Emails"
+            )
+            raise ServiceUnavailableError(
+                "We couldn't send the email right now. Please try again later.", code="email_delivery_unavailable"
+            )
+        if code == "email_address_invalid":
+            raise ValidationAppError("This email address can't receive email.", code="validation_error")
         if code in {"signup_disabled", "email_provider_disabled"}:
             raise AppError("Sign-up is currently disabled.", code="signup_disabled", status_code=403)
         if code in {"otp_expired", "bad_jwt", "flow_state_expired"}:
@@ -247,7 +260,10 @@ class SupabaseAuthClient:
         """
         redirect = self.settings.password_reset_redirect_url
         if not redirect:
-            logger.error("Password recovery requested but no reset redirect URL is configured")
+            logger.error(
+                "AUTH_PASSWORD_RESET_REDIRECT_URL is not set: forgot-password is disabled "
+                "(503 password_reset_not_configured). Set it to the app deep link, e.g. sharkhire://auth/reset-password"
+            )
             raise NotConfiguredError(
                 "Password reset is temporarily unavailable.", code="password_reset_not_configured"
             )

@@ -264,11 +264,19 @@ class Settings(BaseSettings):
     def revenuecat_products_pakistan(self) -> list[str]:
         return self._csv(self.REVENUECAT_PRODUCT_PAKISTAN)
 
+    @staticmethod
+    def _unquote(value: str | None) -> str:
+        """Whitespace and one pair of surrounding quotes removed (dashboards store pasted quotes literally)."""
+        value = (value or "").strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1].strip()
+        return value
+
     @property
     def password_reset_redirect_url(self) -> str | None:
         """The single ``redirect_to`` used for every password-recovery e-mail: the app deep link
         ``AUTH_PASSWORD_RESET_REDIRECT_URL`` (e.g. ``sharkhire://auth/reset-password``), as configured."""
-        return (self.AUTH_PASSWORD_RESET_REDIRECT_URL or "").strip() or None
+        return self._unquote(self.AUTH_PASSWORD_RESET_REDIRECT_URL) or None
 
     def auth_redirect_warnings(self) -> list[str]:
         """Redirect settings that make Supabase fall back to its Site URL (often localhost:3000).
@@ -280,12 +288,20 @@ class Settings(BaseSettings):
             ("AUTH_EMAIL_REDIRECT_URL", (self.AUTH_EMAIL_REDIRECT_URL or "").strip()),
             ("AUTH_PASSWORD_RESET_REDIRECT_URL", self.password_reset_redirect_url or ""),
         ):
-            if not value:
+            if not value and name == "AUTH_PASSWORD_RESET_REDIRECT_URL":
+                warnings.append(
+                    "AUTH_PASSWORD_RESET_REDIRECT_URL is not set: POST /api/v1/auth/forgot-password returns "
+                    "503 password_reset_not_configured (set it to the app deep link, e.g. sharkhire://auth/reset-password)"
+                )
+            elif not value:
                 warnings.append(f"{name} is not set: Supabase e-mail links will open the project's Site URL")
             elif "://" not in value:
                 warnings.append(f"{name} is not an absolute URL/deep link: Supabase will ignore it")
             elif self.is_production and any(h in value.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")):  # noqa: S104
                 warnings.append(f"{name} points to a local address in production")
+        raw_reset = (self.AUTH_PASSWORD_RESET_REDIRECT_URL or "").strip()
+        if raw_reset and raw_reset != self._unquote(raw_reset):
+            warnings.append("AUTH_PASSWORD_RESET_REDIRECT_URL is wrapped in quotes: the quotes are ignored; remove them")
         return warnings
 
     def subscription_config_warnings(self) -> list[str]:

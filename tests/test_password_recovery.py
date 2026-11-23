@@ -326,3 +326,82 @@ async def test_malformed_amr_rejected_not_crashing(client, supabase, amr):
     r = await client.post(RESET, json={"access_token": make_token(extra={"amr": amr}), "new_password": NEW})
     assert r.status_code == 401 and r.json()["error"]["code"] == "RECOVERY_LINK_INVALID_OR_EXPIRED"
     assert not put_calls(supabase)
+
+
+# =============================================================== deployment configuration (forgot-password)
+async def test_missing_redirect_logs_one_clear_error(client, supabase, caplog):
+    get_settings().AUTH_PASSWORD_RESET_REDIRECT_URL = None
+    with caplog.at_level(logging.ERROR):
+        r = await client.post(FORGOT, json={"email": "a@example.com"})
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "password_reset_not_configured" and r.json()["success"] is False
+    errors = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(errors) == 1 and "AUTH_PASSWORD_RESET_REDIRECT_URL is not set" in errors[0]
+
+
+@pytest.mark.parametrize("raw", ['"sharkhire://auth/reset-password"', "'sharkhire://auth/reset-password'",
+                                 ' "sharkhire://auth/reset-password" '])
+async def test_quoted_redirect_value_is_unquoted(client, supabase, raw):
+    get_settings().AUTH_PASSWORD_RESET_REDIRECT_URL = raw
+    supabase.add("POST", "/recover", httpx.Response(200, json={}))
+    assert (await client.post(FORGOT, json={"email": "a@example.com"})).status_code == 200
+    assert recover_calls(supabase)[-1].url.params["redirect_to"] == "sharkhire://auth/reset-password"
+
+
+@pytest.mark.parametrize("upstream", [httpx.Response(500, json={"code": 500, "error_code": "unexpected_failure",
+                                                                "msg": "Error sending recovery email"}),
+                                      httpx.Response(502, text="bad gateway")])
+async def test_supabase_unavailable_returns_auth_unavailable(client, supabase, upstream, caplog):
+    supabase.add("POST", "/recover", upstream)
+    with caplog.at_level(logging.WARNING):
+        r = await client.post(FORGOT, json={"email": "a@example.com"})
+    assert r.status_code == 503 and r.json()["error"]["code"] == "auth_unavailable"
+    assert "Error sending recovery email" not in r.text  # upstream detail stays server-side
+    assert "Forgot-password failed: auth_unavailable" in caplog.text
+    assert "Supabase Auth recover failed: status=" in caplog.text
+
+
+async def test_supabase_mailer_not_authorized(client, supabase, caplog):
+    """Built-in Supabase SMTP only mails project team members until custom SMTP is configured."""
+    supabase.add("POST", "/recover", httpx.Response(400, json={
+        "code": 400, "error_code": "email_address_not_authorized",
+        "msg": "Email address \"x@example.com\" cannot be used as it is not authorized"}))
+    with caplog.at_level(logging.ERROR):
+        r = await client.post(FORGOT, json={"email": "a@example.com"})
+    assert r.status_code == 503 and r.json()["error"]["code"] == "email_delivery_unavailable"
+    assert "x@example.com" not in r.text and "x@example.com" not in caplog.text
+    assert "configure custom SMTP" in caplog.text
+
+
+async def test_supabase_rejects_address(client, supabase):
+    supabase.add("POST", "/recover", httpx.Response(400, json={"error_code": "email_address_invalid"}))
+    r = await client.post(FORGOT, json={"email": "a@example.com"})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "validation_error"
+
+
+async def test_auth_health_reports_configuration_without_values(client):
+    s = get_settings()
+    r = await client.get("/api/v1/health/auth")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok" and body["password_reset"] == "configured" and body["supabase_auth"] == "configured"
+    assert "sharkhire://" not in r.text and "test-anon-key" not in r.text
+    s.AUTH_PASSWORD_RESET_REDIRECT_URL = "  "
+    r = await client.get("/api/v1/health/auth")
+    assert r.status_code == 503
+    assert r.json()["status"] == "misconfigured"
+    assert r.json()["password_reset"] == "missing AUTH_PASSWORD_RESET_REDIRECT_URL"
+
+
+@pytest.mark.unit
+def test_startup_warnings_for_reset_redirect():
+    from app.core.config import load_settings
+
+    missing = load_settings(_env_file=None, AUTH_PASSWORD_RESET_REDIRECT_URL="")
+    assert any("forgot-password returns 503 password_reset_not_configured" in w for w in missing.auth_redirect_warnings())
+    quoted = load_settings(_env_file=None, AUTH_PASSWORD_RESET_REDIRECT_URL='"sharkhire://auth/reset-password"')
+    assert quoted.password_reset_redirect_url == "sharkhire://auth/reset-password"
+    assert any("wrapped in quotes" in w for w in quoted.auth_redirect_warnings())
+    good = load_settings(_env_file=None, AUTH_PASSWORD_RESET_REDIRECT_URL="sharkhire://auth/reset-password",
+                         AUTH_EMAIL_REDIRECT_URL="sharkhire://auth/callback")
+    assert good.auth_redirect_warnings() == []

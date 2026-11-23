@@ -19,10 +19,27 @@ See [ENVIRONMENT_CONFIGURATION.md](ENVIRONMENT_CONFIGURATION.md). Production **m
 `SUPABASE_SERVICE_ROLE_KEY`, `JSEARCH_API_KEY`, `LOG_JSON=true`. The container refuses to start (exit 1, clear list
 of problems) when these are missing (`python -m app.preflight`).
 
+**Auth e-mail flows (required for forgot-password and verification links; the app still starts without them):**
+
+| Variable | Value | Used by |
+|---|---|---|
+| `SUPABASE_URL` | `https://<project-ref>.supabase.co` | every Supabase Auth call |
+| `SUPABASE_ANON_KEY` | the project's anon/publishable key | signup, login, resend, **forgot-password** (`/auth/v1/recover`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | secret service-role key | Storage, admin ban/unban, account deletion (not forgot-password) |
+| `AUTH_PASSWORD_RESET_REDIRECT_URL` | `sharkhire://auth/reset-password` | `redirect_to` of every recovery e-mail |
+| `AUTH_EMAIL_REDIRECT_URL` | `sharkhire://auth/callback` | `redirect_to` of verification e-mails |
+
+Enter values without quotes. When `AUTH_PASSWORD_RESET_REDIRECT_URL` is missing, startup logs
+`Auth e-mail configuration: AUTH_PASSWORD_RESET_REDIRECT_URL is not set …`, and every forgot-password call returns
+`503 password_reset_not_configured` with an ERROR log line naming the variable. It never falls back to localhost.
+
 ## 4. Supabase project 🔑
 1. **Auth → Providers**: enable Email. Decide whether email confirmation is required.
-2. **Auth → URL Configuration**: add the app deep links (`sharkhire://auth/callback`, `sharkhire://auth/reset-password`)
-   to Redirect URLs; set the same values in `AUTH_EMAIL_REDIRECT_URL` / `AUTH_PASSWORD_RESET_REDIRECT_URL`.
+2. **Auth → URL Configuration**: add the app deep links (`sharkhire://auth/callback`, `sharkhire://auth/reset-password`,
+   or `sharkhire://**`) to Redirect URLs; set the same values in `AUTH_EMAIL_REDIRECT_URL` / `AUTH_PASSWORD_RESET_REDIRECT_URL`.
+   Set **Site URL** to a real URL, not `http://localhost:3000`: Supabase uses it when a redirect is not allowed.
+   **Auth → Emails → SMTP**: configure custom SMTP for production. The built-in mailer sends only a few e-mails per
+   hour (`429 RATE_LIMITED`) and only to project team members (`503 email_delivery_unavailable`).
 3. **JWT signing keys**: prefer asymmetric (ES256/RS256) keys — the API reads the JWKS automatically. The current
    SharkHire project signs with **ES256** (verified 2026-11-16). Only legacy HS256 projects need `SUPABASE_JWT_SECRET`
    **and** `HS256` in `SUPABASE_JWT_ALGORITHMS`.
@@ -78,6 +95,8 @@ client exists.
 ## 11. Health checks
 - Liveness: `GET /health` (process up; used by the Docker `HEALTHCHECK`).
 - Readiness: `GET /api/v1/health/database` (200 only if `SELECT 1` succeeds, else 503).
+- Auth e-mail configuration: `GET /api/v1/health/auth`. Returns 200 `{"status": "ok", "password_reset": "configured", …}`,
+  or 503 `misconfigured` naming the missing variable (never its value). It does not check Supabase Dashboard settings.
 
 ## 12. Logging
 `LOG_JSON=true` emits one JSON line per event with timestamp, level, request_id, method, path, status, duration.

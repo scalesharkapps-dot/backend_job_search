@@ -265,6 +265,10 @@ async def forgot_password(request: Request, body: EmailRequest, auth: Auth) -> d
         await auth.send_password_recovery(body.email)
     except RateLimitedError as exc:
         raise _throttled(_retry_after(exc)) from None
+    except AppError as exc:
+        if exc.code != "password_reset_not_configured":  # that case already logged its own ERROR line
+            logger.error("Forgot-password failed: %s (HTTP %s)", exc.code, exc.status_code)
+        raise
     return ok(None, _RESET_LINK_MSG)
 
 
