@@ -10,6 +10,7 @@
 |---|---|---|
 | `query` | string (2–200) | required, e.g. `Python Developer` |
 | `location` | string | e.g. `Karachi`, `London` |
+| `city` | string | Optional. Only jobs in this city (Pakistan or international, e.g. `Karachi`, `Lahore`, `London`), exact city first then districts; spelling variants handled (`Karāchi`, `Bangalore`/`Bengaluru`). With `remote_jobs_only=true`, remote jobs without a city follow the city matches. Add `country` to disambiguate (`Hyderabad` + `pk`). A country name is rejected (422). Omit for the previous behaviour |
 | `country` | ISO-2 | `pk`, `us`, `gb`… inferred from `location` when omitted; never defaults to Pakistan |
 | `company` | string | applied locally (also added to the query text) |
 | `remote_jobs_only` | bool | provider `work_from_home` |

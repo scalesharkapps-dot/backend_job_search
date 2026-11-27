@@ -4,7 +4,8 @@ Filters applied BY JSEARCH: query, country, language, date_posted, work_from_hom
 (remote_jobs_only), employment_types, job_requirements (experience), radius,
 exclude_job_publishers, num_pages, cursor.
 Filters applied LOCALLY after normalisation: company (substring match on employer
-name; also appended to the query text), min_salary.
+name; also appended to the query text), min_salary, city (also appended to the query
+text and sent to Techmap; see ``app.services.locations``).
 """
 
 from __future__ import annotations
@@ -81,6 +82,7 @@ class JobSearchParams(BaseModel):
 
     query: str = Field(min_length=2, max_length=200, description="Job title or keywords")
     location: str | None = Field(default=None, max_length=100, description="City/region, e.g. Karachi")
+    city: str | None = Field(default=None, max_length=100, description="Only jobs in this city, e.g. Karachi, London")
     country: str | None = Field(default=None, description="ISO 3166-1 alpha-2, e.g. pk, us, gb")
     company: str | None = Field(default=None, max_length=100)
     remote_jobs_only: bool = False
@@ -94,7 +96,7 @@ class JobSearchParams(BaseModel):
     num_pages: int = Field(default=1, ge=1)
     cursor: str | None = Field(default=None, max_length=1024)
 
-    @field_validator("query", "location", "company")
+    @field_validator("query", "location", "company", "city")
     @classmethod
     def _text(cls, v: str | None) -> str | None:
         if v is None:
@@ -104,6 +106,15 @@ class JobSearchParams(BaseModel):
             return None
         if not _TEXT_RE.match(v):
             raise ValueError("contains unsupported characters")
+        return v
+
+    @field_validator("city")
+    @classmethod
+    def _city(cls, v: str | None) -> str | None:
+        from app.services.locations import is_country_name
+
+        if v and is_country_name(v):
+            raise ValueError("city must be a city, not a country; use the country parameter")
         return v
 
     @field_validator("country")
@@ -147,14 +158,22 @@ class JobSearchParams(BaseModel):
 
     @property
     def effective_country(self) -> str | None:
-        return self.country or infer_country(self.location) or (get_settings().JSEARCH_DEFAULT_COUNTRY or None)
+        return (
+            self.country
+            or infer_country(self.city)
+            or infer_country(self.location)
+            or (get_settings().JSEARCH_DEFAULT_COUNTRY or None)
+        )
 
     def provider_params(self) -> dict[str, Any]:
         text = self.query
         if self.company:
             text += f" at {self.company}"
-        if self.location:
-            text += f" in {self.location}"
+        places = [p for p in (self.city, self.location) if p]
+        if self.city and self.location and self.city.lower() in self.location.lower():
+            places = [self.location]
+        if places:
+            text += " in " + ", ".join(places)
         params: dict[str, Any] = {
             "query": text,
             "num_pages": self.num_pages,
@@ -194,14 +213,16 @@ FILTER_CATALOG: dict[str, Any] = {
         "au": "Australia", "de": "Germany", "ae": "United Arab Emirates", "sa": "Saudi Arabia",
     },
     "applied_by_provider": [
-        "query", "location", "country", "remote_jobs_only", "employment_types", "experience",
+        "query", "location", "city", "country", "remote_jobs_only", "employment_types", "experience",
         "date_posted", "radius", "language", "exclude_job_publishers", "num_pages", "cursor",
     ],
-    "applied_locally": ["company", "min_salary"],
+    "applied_locally": ["company", "min_salary", "city"],
     "pagination": "cursor",
     "notes": [
         "Coverage depends on the JSearch provider (Google for Jobs); not every job worldwide is indexed.",
         "When configured, Techmap (daily international job postings) adds listings; item.source tells which provider.",
         "Remote listings are flagged with job_is_remote; location restrictions in descriptions still apply.",
+        "city returns only jobs located in that city (exact city first); with remote_jobs_only, remote jobs "
+        "without a city are kept after them. Add country to disambiguate (e.g. Hyderabad + pk).",
     ],
 }
