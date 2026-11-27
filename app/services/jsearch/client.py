@@ -82,7 +82,8 @@ class PlanQuota:
     are read from every provider response.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, name: str = "JSearch") -> None:
+        self.name = name
         self.limit: int | None = None
         self.remaining: int | None = None
         self.reset_at: float | None = None  # monotonic time
@@ -102,7 +103,7 @@ class PlanQuota:
             self.limit = _int("x-ratelimit-requests-limit") or self.limit
             self.reset_at = time.monotonic() + reset if reset is not None else None
         if remaining <= warn_below:
-            logger.warning("JSearch plan quota low: %s requests remaining in the current period", remaining)
+            logger.warning("%s plan quota low: %s requests remaining in the current period", self.name, remaining)
 
     def blocked_for(self, reserve: int) -> int:
         """Seconds to wait when the reserve is reached (0 = calls allowed)."""

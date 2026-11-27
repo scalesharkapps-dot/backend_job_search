@@ -28,6 +28,11 @@ from app.models.user import str_enum
 class JobSource(str, enum.Enum):
     JSEARCH = "jsearch"
     SHARKHIRE = "sharkhire"  # posted by a SharkHire employer (Phase 7)
+    TECHMAP = "techmap"  # Techmap "Daily International Job Postings" (RapidAPI)
+
+
+# Listings fetched from job-search providers (not posted on SharkHire).
+EXTERNAL_SOURCES: tuple[JobSource, ...] = (JobSource.JSEARCH, JobSource.TECHMAP)
 
 
 class PostingStatus(str, enum.Enum):

@@ -38,7 +38,7 @@ from app.models.application import (
     SavedJob,
 )
 from app.models.base import utcnow
-from app.models.job import Job, JobSource
+from app.models.job import EXTERNAL_SOURCES, Job, JobSource
 from app.models.profile import UserCV
 from app.models.recommendation import JobRecommendation
 from app.models.user import User, UserRole
@@ -46,6 +46,12 @@ from app.schemas.application import ApplicationCreate, ApplicationUpdate, Interv
 from app.services import visibility
 
 STATUS_ORDER = list(ApplicationStatus)
+# Which application source a tracked job records (external listings are applied to outside SharkHire).
+_APPLICATION_SOURCE = {
+    JobSource.JSEARCH: ApplicationSource.JSEARCH,
+    JobSource.TECHMAP: ApplicationSource.TECHMAP,
+    JobSource.SHARKHIRE: ApplicationSource.SHARKHIRE,
+}
 
 
 def _like(value: str) -> str:
@@ -211,8 +217,8 @@ async def create_application(db: AsyncSession, user: User, body: ApplicationCrea
             job_apply_url=body.job_apply_url or job.apply_url,
             employment_type=body.employment_type or job.employment_type,
             salary_information=body.salary_information or _salary_text(job),
-            external_job_id=job.external_id if job.source == JobSource.JSEARCH else None,
-            source=ApplicationSource.JSEARCH if job.source == JobSource.JSEARCH else ApplicationSource.SHARKHIRE,
+            external_job_id=job.external_id if job.source in EXTERNAL_SOURCES else None,
+            source=_APPLICATION_SOURCE.get(job.source, ApplicationSource.SHARKHIRE),
             match_percentage=await _match_for(db, user, job.id),
         )
     else:

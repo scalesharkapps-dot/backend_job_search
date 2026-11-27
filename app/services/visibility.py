@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError
 from app.models.base import utcnow
 from app.models.employer import EmployerAccountStatus, EmployerProfile
-from app.models.job import Job, JobSource, PostingStatus
+from app.models.job import EXTERNAL_SOURCES, Job, JobSource, PostingStatus
 
 
 def _today() -> date:
@@ -37,11 +37,11 @@ def internal_visible_filter() -> Any:
 
 
 def public_job_filter() -> Any:
-    return or_(Job.source == JobSource.JSEARCH, internal_visible_filter())
+    return or_(Job.source.in_(EXTERNAL_SOURCES), internal_visible_filter())
 
 
 async def is_visible(db: AsyncSession, job: Job) -> bool:
-    if job.source == JobSource.JSEARCH:
+    if job.source in EXTERNAL_SOURCES:
         return True
     if job.posting_status != PostingStatus.PUBLISHED or job.employer_id is None:
         return False

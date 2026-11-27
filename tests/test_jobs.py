@@ -55,6 +55,7 @@ async def test_search_pakistan(client, jsearch, user_factory, db):
     assert body["pagination"] == {
         "page_size": 2, "has_more": True, "next_cursor": "next-cursor-1", "total_results": None,
         "source": "jsearch", "cached": False, "stale": False, "country": "pk",
+        "providers": {"jsearch": {"status": "live", "count": 2}, "techmap": {"status": "not_configured", "count": 0}},
     }
     sent = params_of(jsearch.requests[-1])
     assert sent["query"] == "Python Developer in Karachi"

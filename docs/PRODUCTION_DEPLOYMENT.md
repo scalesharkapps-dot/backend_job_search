@@ -73,6 +73,17 @@ Subscribe on RapidAPI, set `JSEARCH_API_KEY`. Default endpoint `/search-v2` (cur
 supported via `JSEARCH_SEARCH_PATH=/search`. Tune `JSEARCH_GLOBAL_CALLS_PER_MINUTE` to your plan (it is per process;
 total = value × processes).
 
+**Techmap (second provider, optional):** subscribe to "Daily International Job Postings" (Techmap) on RapidAPI and
+set `TECHMAP_API_KEY` (and `TECHMAP_API_HOST=daily-international-job-postings.p.rapidapi.com`). `GET /api/v1/jobs/search`
+then queries both providers concurrently, merges and de-duplicates them (each item has `source` `jsearch` or
+`techmap`; `pagination.providers` shows per-provider status), and still answers when one provider fails.
+Cost control: each Techmap request is billed against the plan (Basic: 100 requests/month) and overage is
+**billed, not blocked**. The backend caches Techmap results for `TECHMAP_CACHE_TTL_SECONDS` (6 h), fetches one
+Techmap page (10 jobs) per search page, and stops calling when RapidAPI reports `TECHMAP_QUOTA_RESERVE` or fewer
+requests left. Techmap is skipped for filters it cannot apply (experience, radius, publisher exclusion,
+contractor/intern types). Leave the key empty to run JSearch only. Run `alembic upgrade head` (migration 0012
+allows the `techmap` source).
+
 ## 8. Build the image
 ```bash
 docker build -t sharkhire-api:1.0.0 .

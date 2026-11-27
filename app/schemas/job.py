@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.models.job import Job
+from app.models.job import EXTERNAL_SOURCES, Job
 
 
 class ApplyOption(BaseModel):
@@ -93,7 +93,7 @@ def job_summary(job: Job) -> dict[str, Any]:
         "job_publisher": job.publisher,
         "job_description_snippet": _snippet(job.description),
         "job_required_skills": job.required_skills or [],
-        "is_external": job.source.value == "jsearch",
+        "is_external": job.source in EXTERNAL_SOURCES,
         "listing_unavailable": job.unavailable_since is not None,
         "last_seen_at": job.last_seen_at,
     }
@@ -123,10 +123,12 @@ class SearchMeta(BaseModel):
     has_more: bool
     next_cursor: str | None
     total_results: int | None = None  # the provider does not report reliable totals
-    source: str = "jsearch"
+    source: str = "jsearch"  # providers that contributed, e.g. "jsearch" or "jsearch+techmap"
     cached: bool
     stale: bool = False
     country: str | None = None
+    # Per provider: {"status": live|cached|stale|error|skipped|not_configured|exhausted, "count": n, "reason"?}
+    providers: dict[str, dict[str, Any]] = {}
 
 
 class JobSearchOut(BaseModel):

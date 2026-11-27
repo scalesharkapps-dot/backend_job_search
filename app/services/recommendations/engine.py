@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.exceptions import ValidationAppError
 from app.models.base import utcnow
-from app.models.job import Job, JobSource
+from app.models.job import EXTERNAL_SOURCES, Job
 from app.models.profile import CVProcessingStatus, UserCV, UserProfile
 from app.models.recommendation import (
     JobRecommendation,
@@ -176,7 +176,7 @@ def recommendable_filter() -> Any:
     not known to be gone, plus publicly visible SharkHire listings."""
     settings = get_settings()
     cutoff = utcnow() - timedelta(days=settings.REC_JOB_MAX_AGE_DAYS)
-    external = and_(Job.source == JobSource.JSEARCH, Job.unavailable_since.is_(None), Job.last_seen_at >= cutoff)
+    external = and_(Job.source.in_(EXTERNAL_SOURCES), Job.unavailable_since.is_(None), Job.last_seen_at >= cutoff)
     return or_(external, visibility.internal_visible_filter())
 
 
