@@ -63,6 +63,7 @@ class ApplicationSource(str, enum.Enum):
     JSEARCH = "jsearch"  # external listing found via JSearch (applied outside SharkHire)
     SHARKHIRE = "sharkhire"  # SharkHire employer listing (internal submission, Phase 7)
     MANUAL = "manual"  # job not stored in SharkHire; details entered by the user
+    TECHMAP = "techmap"  # external listing found via Techmap (applied outside SharkHire)
 
 
 class DiscoveredVia(str, enum.Enum):

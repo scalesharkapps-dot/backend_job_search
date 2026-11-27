@@ -201,6 +201,7 @@ FILTER_CATALOG: dict[str, Any] = {
     "pagination": "cursor",
     "notes": [
         "Coverage depends on the JSearch provider (Google for Jobs); not every job worldwide is indexed.",
+        "When configured, Techmap (daily international job postings) adds listings; item.source tells which provider.",
         "Remote listings are flagged with job_is_remote; location restrictions in descriptions still apply.",
     ],
 }

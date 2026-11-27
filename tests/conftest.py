@@ -34,6 +34,7 @@ os.environ.update(
         "SUPABASE_JWT_SECRET": "",
         "SUPABASE_JWT_ALGORITHMS": "ES256,RS256",
         "JSEARCH_API_KEY": "test-rapidapi-key",
+        "TECHMAP_API_KEY": "",  # tests opt in with the `techmap` fixture; never a real key
         "STORAGE_BACKEND": "local",
         "LOG_LEVEL": "WARNING",
         "RATE_LIMIT_ENABLED": "true",
@@ -67,6 +68,7 @@ from app.models import Base
 from app.models.user import User, UserRole
 from app.services.http import close_http_clients, set_http_client
 from app.services.jsearch.client import outbound_budget, plan_quota
+from app.services.techmap.client import techmap_budget, techmap_quota
 
 SUPABASE = "https://test-project.supabase.co"
 ISSUER = f"{SUPABASE}/auth/v1"
@@ -147,6 +149,8 @@ def _reset_state(tmp_path: Any) -> Any:
     limiter.reset()
     outbound_budget.reset()
     plan_quota.reset()
+    techmap_budget.reset()
+    techmap_quota.reset()
     jwks_cache.set_keys({"keys": [_PUBLIC_JWK]})
     yield
     for key, value in original.items():
@@ -219,6 +223,17 @@ def storage_upstream() -> MockUpstream:
 def jsearch() -> MockUpstream:
     upstream = MockUpstream()
     set_http_client("jsearch", upstream.client())
+    return upstream
+
+
+@pytest.fixture
+def techmap() -> MockUpstream:
+    """Techmap enabled with a test key; its HTTP calls go to this mock."""
+    from pydantic import SecretStr
+
+    get_settings().TECHMAP_API_KEY = SecretStr("test-techmap-key")
+    upstream = MockUpstream()
+    set_http_client("techmap", upstream.client())
     return upstream
 
 

@@ -24,7 +24,7 @@ from app.models.employer import (
     VerificationRequestStatus,
     VerificationStatus,
 )
-from app.models.job import Job, JobSource, PostingStatus
+from app.models.job import EXTERNAL_SOURCES, Job, JobSource, PostingStatus
 from app.models.user import User, UserRole
 from app.services import audit
 from app.services.jsearch.client import plan_quota
@@ -333,7 +333,7 @@ async def dashboard(db: AsyncSession) -> dict[str, Any]:
         "published_jobs": int(jobs_by_status.get(PostingStatus.PUBLISHED, 0)),
         "pending_moderation": int(jobs_by_status.get(PostingStatus.PENDING_REVIEW, 0)),
         "closed_jobs": int(jobs_by_status.get(PostingStatus.CLOSED, 0)),
-        "external_jobs_stored": await count(select(func.count()).select_from(Job).where(Job.source == JobSource.JSEARCH)),
+        "external_jobs_stored": await count(select(func.count()).select_from(Job).where(Job.source.in_(EXTERNAL_SOURCES))),
         "total_applications": await count(select(func.count()).select_from(Application)),
         "internal_applications": await count(select(func.count()).select_from(Application).where(Application.employer_status.is_not(None))),
         "pending_reports": await count(select(func.count()).select_from(Report).where(

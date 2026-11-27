@@ -1,4 +1,4 @@
-"""Job search endpoints (JSearch via RapidAPI).
+"""Job search endpoints (JSearch + Techmap via RapidAPI).
 
 Access policy: searching, details and suggestions require an authenticated user
 (protects the RapidAPI subscription from anonymous abuse). The filter catalogue
@@ -19,6 +19,7 @@ from app.core.exceptions import ValidationAppError
 from app.core.rate_limit import enforce_user_limit, rate_limit
 from app.core.responses import ERROR_RESPONSES, ApiResponse, ok, paginate
 from app.schemas.job import JobDetailOut, JobSearchOut, Suggestion, job_detail, job_summary
+from app.services import job_search
 from app.services.jsearch import service as job_service
 from app.services.jsearch.client import JSearchClient
 from app.services.jsearch.filters import (
@@ -28,6 +29,7 @@ from app.services.jsearch.filters import (
     JobSearchParams,
     SearchEmploymentType,
 )
+from app.services.techmap.client import TechmapClient, get_techmap_client
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"], responses=ERROR_RESPONSES)
 
@@ -37,6 +39,7 @@ def get_jsearch_client() -> JSearchClient:
 
 
 Client = Annotated[JSearchClient, Depends(get_jsearch_client)]
+Techmap = Annotated[TechmapClient, Depends(get_techmap_client)]
 
 
 @router.get(
@@ -50,6 +53,7 @@ async def search_jobs(
     user: AppUser,
     db: DBSession,
     client: Client,
+    techmap: Techmap,
     query: Annotated[str, Query(min_length=2, max_length=200, description="Job title or keywords, e.g. 'Python Developer'")],
     location: Annotated[str | None, Query(max_length=100, description="City/region, e.g. Karachi, London")] = None,
     country: Annotated[str | None, Query(description="ISO-2 code (pk, us, gb, ...). Inferred from location when omitted")] = None,
@@ -65,7 +69,12 @@ async def search_jobs(
     num_pages: Annotated[int, Query(ge=1, description="Provider pages (10 results each)")] = 1,
     cursor: Annotated[str | None, Query(max_length=1024, description="next_cursor from the previous response")] = None,
 ) -> dict[str, Any]:
-    """Searches JSearch and returns normalised jobs.
+    """Searches JSearch and Techmap together and returns one normalised, de-duplicated list.
+
+    Each item's `source` is `jsearch` or `techmap`; `pagination.providers` reports
+    per-provider status and counts. If one provider fails, the other's jobs are
+    still returned. Techmap is skipped for filters it cannot apply (experience,
+    radius, publisher exclusion, contractor/intern types).
 
     Pagination is cursor-based: pass `pagination.next_cursor` to get the next page;
     `has_more` is false when the provider returns no cursor. `total_results` is
@@ -85,7 +94,7 @@ async def search_jobs(
         details = [{"field": ".".join(map(str, e["loc"])), "message": e["msg"]} for e in exc.errors()]
         raise ValidationAppError(details=details) from None
     enforce_user_limit("job_search", user.id, get_settings().RATE_LIMIT_SEARCH_PER_MINUTE)
-    result = await job_service.search_jobs(db, params, client)
+    result = await job_search.search(db, params, client, techmap)
     items = [job_summary(j) for j in result.jobs]
     message = "No jobs found for this search." if not items else "Jobs retrieved successfully"
     if result.stale:
@@ -98,10 +107,11 @@ async def search_jobs(
                 "has_more": result.next_cursor is not None,
                 "next_cursor": result.next_cursor,
                 "total_results": None,
-                "source": "jsearch",
+                "source": result.source,
                 "cached": result.cached,
                 "stale": result.stale,
                 "country": result.country,
+                "providers": {name: status.as_dict() for name, status in result.providers.items()},
             },
         },
         message,

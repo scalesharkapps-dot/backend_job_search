@@ -155,6 +155,26 @@ class Settings(BaseSettings):
     # Empty = let the provider decide (searches are NOT restricted to Pakistan by default).
     JSEARCH_DEFAULT_COUNTRY: str = ""
 
+    # ---- Techmap (RapidAPI "Daily International Job Postings") -- second job provider ----
+    # Searches query JSearch and Techmap together; without a key Techmap is simply skipped.
+    TECHMAP_ENABLED: bool = True
+    TECHMAP_API_KEY: SecretStr | None = None
+    TECHMAP_API_HOST: str = "daily-international-job-postings.p.rapidapi.com"
+    TECHMAP_SEARCH_PATH: str = "/api/v2/jobs/search"
+    TECHMAP_TIMEOUT_SECONDS: float = 12.0
+    TECHMAP_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    TECHMAP_MAX_RETRIES: int = Field(default=1, ge=0, le=3)
+    # Results are cached longer than JSearch: every Techmap request counts against a small
+    # monthly quota, and requests above it are billed as overage (not blocked) by RapidAPI.
+    TECHMAP_CACHE_TTL_SECONDS: int = 21600
+    # Posting window used when date_posted is "all" (the API keeps ~3 months; Pakistani volume is small,
+    # so 30 days keeps more genuine results).
+    TECHMAP_MAX_AGE_DAYS: int = Field(default=30, ge=1, le=90)
+    TECHMAP_CALLS_PER_MINUTE: int = 10
+    # Stop calling when RapidAPI reports this many requests (or fewer) left: prevents overage.
+    TECHMAP_QUOTA_RESERVE: int = 10
+    TECHMAP_QUOTA_WARN_BELOW: int = 25
+
     # ---- Rate limiting (per client; process-local) ----
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_AUTH_PER_MINUTE: int = 10
@@ -211,7 +231,8 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "REVENUECAT_ALLOW_SANDBOX", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTHORIZATION", mode="before"
+        "REVENUECAT_ALLOW_SANDBOX", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTHORIZATION", "TECHMAP_API_KEY",
+        mode="before",
     )
     @classmethod
     def _empty_is_unset(cls, value: object) -> object:
