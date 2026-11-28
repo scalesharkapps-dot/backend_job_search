@@ -56,6 +56,9 @@ async def search_jobs(
     techmap: Techmap,
     query: Annotated[str, Query(min_length=2, max_length=200, description="Job title or keywords, e.g. 'Python Developer'")],
     location: Annotated[str | None, Query(max_length=100, description="City/region, e.g. Karachi, London")] = None,
+    city: Annotated[str | None, Query(max_length=100, description=(
+        "Only jobs in this city (Pakistan or international, e.g. Karachi, Lahore, London). Exact city "
+        "matches first; combine with country to disambiguate"))] = None,
     country: Annotated[str | None, Query(description="ISO-2 code (pk, us, gb, ...). Inferred from location when omitted")] = None,
     company: Annotated[str | None, Query(max_length=100, description="Employer name (applied locally)")] = None,
     remote_jobs_only: bool = False,
@@ -84,7 +87,7 @@ async def search_jobs(
     """
     try:
         params = JobSearchParams(
-            query=query, location=location, country=country, company=company,
+            query=query, location=location, city=city, country=country, company=company,
             remote_jobs_only=remote_jobs_only, employment_types=employment_types or [],
             experience=experience or [], date_posted=date_posted, radius=radius, language=language,
             exclude_job_publishers=exclude_job_publishers or [], min_salary=min_salary,

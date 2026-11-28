@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import re
-import unicodedata
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -47,6 +46,7 @@ from app.services.jsearch import cache
 from app.services.jsearch import service as jsearch_service
 from app.services.jsearch.client import JSearchClient
 from app.services.jsearch.filters import DatePosted, JobSearchParams, SearchEmploymentType
+from app.services.locations import city_match_rank, city_variants, fold, is_country_name
 from app.services.techmap.client import TechmapClient, TechmapError, TechmapPage
 from app.services.techmap.normalizer import normalize_techmap_job
 
@@ -54,20 +54,6 @@ logger = logging.getLogger(__name__)
 
 CURSOR_PREFIX = "mx1."
 _DATE_WINDOW_DAYS = {DatePosted.TODAY: 1, DatePosted.THREE_DAYS: 3, DatePosted.WEEK: 7, DatePosted.MONTH: 30}
-# Location values that name a whole country (COUNTRY_ALIASES also contains cities such as London).
-_COUNTRY_NAMES = {
-    "pakistan", "united states", "usa", "us", "united kingdom", "uk", "england", "canada", "australia",
-    "germany", "uae", "united arab emirates", "saudi arabia", "qatar", "india", "ireland", "netherlands",
-    "singapore", "france", "spain", "italy", "new zealand", "malaysia", "turkey", "oman", "bahrain",
-    "kuwait", "sweden", "poland",
-}
-# Spellings Techmap uses for major Pakistani cities (both plain and GeoNames-style with macrons occur).
-_CITY_SPELLINGS = {
-    "karachi": ["Karachi", "Karāchi"], "lahore": ["Lahore", "Lāhore"], "islamabad": ["Islamabad", "Islāmābād"],
-    "rawalpindi": ["Rawalpindi", "Rāwalpindi"], "faisalabad": ["Faisalabad", "Faisalābād"],
-    "multan": ["Multan", "Multān"], "peshawar": ["Peshawar", "Peshāwar"], "hyderabad": ["Hyderabad", "Hyderābād"],
-    "sialkot": ["Sialkot", "Siālkot"], "gujranwala": ["Gujranwala", "Gujrānwāla"], "quetta": ["Quetta"],
-}
 _TECHMAP_WORK_TYPES = {SearchEmploymentType.FULLTIME: "fulltime", SearchEmploymentType.PARTTIME: "parttime"}
 
 
@@ -145,15 +131,14 @@ def techmap_unsupported_reason(params: JobSearchParams) -> str | None:
     return None
 
 
-def _city_from_location(location: str | None) -> str | None:
-    """First part of the location, unless it is just a country name ("Karachi, Pakistan" -> "Karachi")."""
-    if not location:
+def _techmap_city(params: JobSearchParams) -> str | None:
+    """``city`` (or the first part of ``location``), with every spelling Techmap uses; "," = OR."""
+    place = params.city
+    if not place and params.location:
+        place = params.location.split(",")[0].strip()
+    if not place or is_country_name(place):
         return None
-    first = location.split(",")[0].strip()
-    if not first or first.lower() in _COUNTRY_NAMES:
-        return None
-    # Techmap stores some Pakistani cities with diacritics (e.g. "Karāchi"); "," = OR in its query syntax.
-    return ",".join(_CITY_SPELLINGS.get(first.lower(), [first]))
+    return ",".join(city_variants(place))
 
 
 def techmap_query(params: JobSearchParams, page: int, today: date | None = None) -> dict[str, Any]:
@@ -165,7 +150,7 @@ def techmap_query(params: JobSearchParams, page: int, today: date | None = None)
         # "+word" = must contain (Techmap boolean syntax): all words, any order.
         "title": " ".join(f"+{w}" for w in words) if len(words) > 1 else params.query.strip(),
         "countryCode": params.effective_country,
-        "city": _city_from_location(params.location),
+        "city": _techmap_city(params),
         "company": params.company,
         "language": params.language,
         "workPlace": "remote" if params.remote_jobs_only else None,
@@ -190,16 +175,8 @@ def _techmap_cache_key(query: dict[str, Any]) -> str:
 _COMPANY_SUFFIXES = re.compile(r"\b(pvt|private|ltd|limited|llc|inc|incorporated|co|corp|corporation|gmbh|plc|company)\b")
 
 
-def _fold(text: str | None) -> str:
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c)).lower()
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
-
-
 def _company_key(name: str | None) -> str:
-    return re.sub(r"\s+", " ", _COMPANY_SUFFIXES.sub(" ", _fold(name))).strip()
+    return re.sub(r"\s+", " ", _COMPANY_SUFFIXES.sub(" ", fold(name))).strip()
 
 
 def _url_key(url: str | None) -> str | None:
@@ -215,13 +192,13 @@ def is_duplicate(a: Job, b: Job) -> bool:
     url_a, url_b = _url_key(a.apply_url), _url_key(b.apply_url)
     if url_a and url_a == url_b:
         return True
-    if _fold(a.title) != _fold(b.title) or not _company_key(a.company_name):
+    if fold(a.title) != fold(b.title) or not _company_key(a.company_name):
         return False
     if _company_key(a.company_name) != _company_key(b.company_name):
         return False
     if a.country and b.country and a.country != b.country:
         return False
-    city_a, city_b = _fold(a.city), _fold(b.city)
+    city_a, city_b = fold(a.city), fold(b.city)
     return not (city_a and city_b and city_a != city_b)
 
 
@@ -355,6 +332,16 @@ async def search(
     if removed:
         providers["techmap"].count = len(techmap_jobs) - removed
         logger.info("Removed %d Techmap postings duplicating JSearch listings", removed)
+    if params.city:
+        # Exact city first, then district/division matches, then remote-anywhere (stable: keeps interleaving).
+        country = params.effective_country
+
+        def rank(job: Job) -> int:
+            value = city_match_rank(job, params.city or "", country=country,
+                                    include_remote_anywhere=params.remote_jobs_only)
+            return 99 if value is None else value
+
+        merged.sort(key=rank)
 
     # ---- next cursor
     if not state.composite:
