@@ -20,6 +20,7 @@ from app.core.exceptions import NotFoundError
 from app.models.base import utcnow
 from app.models.employer import EmployerAccountStatus, EmployerProfile
 from app.models.job import EXTERNAL_SOURCES, Job, JobSource, PostingStatus
+from app.services.plan_access import ensure_job_accessible
 
 
 def _today() -> date:
@@ -55,4 +56,5 @@ async def get_visible_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
     job = await db.get(Job, job_id)
     if job is None or not await is_visible(db, job):
         raise NotFoundError("Job not found.", code="job_not_found")
+    ensure_job_accessible(job)  # remote jobs are Pro-only (403 PRO_FEATURE_REQUIRED)
     return job

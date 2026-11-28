@@ -21,6 +21,7 @@ from app.services.jsearch.client import JSearchClient
 from app.services.jsearch.filters import JobSearchParams
 from app.services.jsearch.normalizer import normalize_job
 from app.services.locations import city_match_rank
+from app.services.plan_access import remote_jobs_restricted
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,8 @@ def _apply_local_filters(jobs: list[Job], params: JobSearchParams) -> list[Job]:
         result = [j for j in result if j.company_name and needle in j.company_name.lower()]
     if params.min_salary is not None:
         result = [j for j in result if (j.max_salary or j.min_salary) and (j.max_salary or j.min_salary) >= params.min_salary]
+    if remote_jobs_restricted():  # Free plan: remote listings are Pro-only
+        result = [j for j in result if not j.is_remote]
     if params.city:
         result = [
             j for j in result

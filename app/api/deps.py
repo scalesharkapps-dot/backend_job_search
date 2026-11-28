@@ -18,6 +18,7 @@ from app.models.user import User, UserRole
 from app.services.application_links import set_apply_links_visible
 from app.services.billing.revenuecat import RevenueCatClient, get_revenuecat_client
 from app.services.billing.subscriptions import evaluate_access
+from app.services.plan_access import set_pro_for_request
 from app.services.user_service import sync_user
 
 bearer_scheme = HTTPBearer(auto_error=False, description="Supabase access token")
@@ -125,6 +126,7 @@ async def require_app_access(
     unlimited = decision.entitlement_active or decision.access_status == "exempt"
     request.state.application_links_unlimited = unlimited
     set_apply_links_visible(unlimited or not get_settings().HIDE_APPLY_LINKS_FOR_FREE_USERS)
+    set_pro_for_request(unlimited)
     if not decision.allowed:
         summary = decision.summary()
         raise PermissionDeniedError(

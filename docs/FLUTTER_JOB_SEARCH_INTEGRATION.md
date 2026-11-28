@@ -99,3 +99,16 @@ new value per tap, the same value on retries):
 
 `GET /api/v1/jobs/application-usage` returns the same `usage` object (for a "3 of 5 left today" indicator).
 Search, job details, saving and tracking applications are never counted.
+
+## Remote jobs are a Pro feature
+Pro = verified `app_access` subscription (or admin). Free users (e.g. during the 3-day trial):
+
+* `remote_jobs_only=true` on `/jobs/search`, `remote=true` on `/jobs/sharkhire` and `/saved-jobs`,
+  `remote_only=true` on `/recommendations/for-me` and `/analyze`, and `remote_preference: "remote_only"` in
+  recommendation preferences return **403**:
+  `{"success": false, "message": "Remote job access is available exclusively to Pro members. Upgrade to Pro to explore remote opportunities.", "data": {"code": "PRO_FEATURE_REQUIRED", "feature": "remote_jobs", "upgrade_available": true}, "error": {"code": "PRO_FEATURE_REQUIRED", ...}}`
+* Remote listings never appear in their search results (any page, cached or live, JSearch and Techmap), SharkHire
+  listings, recommendations, recommendation history or saved jobs; opening a remote job by id (details, apply link,
+  save, track application) also returns this 403. A refused remote job does not use the daily application limit.
+
+Show the remote toggle as a Pro feature (upgrade prompt on tap) for Free users; Pro users use it exactly as before.

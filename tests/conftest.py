@@ -37,6 +37,8 @@ os.environ.update(
         "TECHMAP_API_KEY": "",  # tests opt in with the `techmap` fixture; never a real key
         # Pre-existing tests expect apply links in payloads; tests/test_application_limit.py enables hiding.
         "HIDE_APPLY_LINKS_FOR_FREE_USERS": "false",
+        # Pre-existing tests search remote jobs as trial users; tests/test_remote_jobs.py enables the rule.
+        "REMOTE_JOBS_PRO_ONLY": "false",
         "STORAGE_BACKEND": "local",
         "LOG_LEVEL": "WARNING",
         "RATE_LIMIT_ENABLED": "true",

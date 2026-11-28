@@ -26,6 +26,7 @@ from app.models.recommendation import (
 from app.models.user import User
 from app.services import visibility
 from app.services.cv import service as cv_service
+from app.services.plan_access import remote_jobs_restricted, require_remote_access
 from app.services.recommendations.matchers import CandidateProfile, JobFacts, experience_level_allowed
 from app.services.recommendations.requirements import DERIVATION_VERSION, JobRequirements, derive_requirements
 from app.services.recommendations.scoring import MatchResult, score_components
@@ -183,7 +184,9 @@ def recommendable_filter() -> Any:
 async def candidate_jobs(db: AsyncSession, *, remote_only: bool = False) -> list[Job]:
     settings = get_settings()
     stmt = select(Job).where(recommendable_filter())
-    if remote_only:
+    if remote_jobs_restricted():  # Free plan: remote listings are Pro-only
+        stmt = stmt.where(Job.is_remote.is_(False))
+    elif remote_only:
         stmt = stmt.where(Job.is_remote.is_(True))
     stmt = stmt.order_by(Job.posted_at.desc().nulls_last(), Job.id).limit(settings.REC_MAX_CANDIDATE_JOBS)
     return list(await db.scalars(stmt))
@@ -271,12 +274,16 @@ async def recommend(
 ) -> tuple[CandidateProfile, list[ScoredJob]]:
     """Score all eligible jobs. Only ``scored[start:end]`` (the page shown to the
     user) is persisted to the recommendation history."""
+    require_remote_access(remote_only)  # before any work: explicit remote request on the Free plan
     settings = get_settings()
     candidate = await build_candidate(db, user, cv_id)
     require_sufficient(candidate)
     prefs = await get_preferences(db, user)
     threshold = min_score if min_score is not None else (prefs.min_match_score if prefs and prefs.min_match_score is not None else settings.REC_MIN_SCORE)
-    remote_only = remote_only or candidate.remote_preference == RemotePreference.REMOTE_ONLY.value
+    # A remote-only preference saved while Pro is ignored on the Free plan (non-remote jobs are shown).
+    remote_only = remote_only or (
+        candidate.remote_preference == RemotePreference.REMOTE_ONLY.value and not remote_jobs_restricted()
+    )
 
     scored: list[ScoredJob] = []
     derived_changed = False
@@ -329,6 +336,8 @@ async def history(
     jobs: dict[uuid.UUID, Job] = {}
     if recs:
         jobs = {j.id: j for j in await db.scalars(select(Job).where(Job.id.in_([r.job_id for r in recs])))}
+    if remote_jobs_restricted():  # keep the history but never hand a remote listing to a Free user
+        jobs = {k: v for k, v in jobs.items() if not v.is_remote}
     return [(r, jobs.get(r.job_id)) for r in recs], total
 
 

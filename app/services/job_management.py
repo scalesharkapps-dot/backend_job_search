@@ -43,7 +43,7 @@ from app.models.profile import UserCV
 from app.models.recommendation import JobRecommendation
 from app.models.user import User, UserRole
 from app.schemas.application import ApplicationCreate, ApplicationUpdate, InterviewBase, InterviewCreate
-from app.services import application_links, visibility
+from app.services import application_links, plan_access, visibility
 
 STATUS_ORDER = list(ApplicationStatus)
 
@@ -101,6 +101,7 @@ async def get_saved(db: AsyncSession, user: User, job_id: uuid.UUID) -> tuple[Sa
     ).first()
     if row is None:
         raise NotFoundError("Saved job not found.", code="saved_job_not_found")
+    plan_access.ensure_job_accessible(row[1])
     return row[0], row[1]
 
 
@@ -135,7 +136,10 @@ async def list_saved(
         stmt = stmt.where(Job.company_name.ilike(_like(company), escape="\\"))
     if location:
         stmt = stmt.where(or_(Job.location.ilike(_like(location), escape="\\"), Job.city.ilike(_like(location), escape="\\")))
-    if remote is not None:
+    plan_access.require_remote_access(remote)
+    if plan_access.remote_jobs_restricted():  # Free plan: remote listings are Pro-only
+        stmt = stmt.where(Job.is_remote.is_(False))
+    elif remote is not None:
         stmt = stmt.where(Job.is_remote.is_(remote))
     if employment_type:
         stmt = stmt.where(Job.employment_type == employment_type)

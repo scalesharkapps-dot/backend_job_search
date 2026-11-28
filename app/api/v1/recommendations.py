@@ -11,7 +11,7 @@ from app.api.deps import CurrentUser, DBSession
 from app.core.config import get_settings
 from app.core.rate_limit import enforce_user_limit
 from app.core.responses import ERROR_RESPONSES, ApiResponse, ok, paginate
-from app.models.recommendation import UserRecommendationPreferences
+from app.models.recommendation import RemotePreference, UserRecommendationPreferences
 from app.schemas.job import job_summary
 from app.schemas.recommendation import (
     AnalyzeRequest,
@@ -21,6 +21,7 @@ from app.schemas.recommendation import (
     RecommendationPage,
     SingleMatchOut,
 )
+from app.services.plan_access import require_remote_access
 from app.services.recommendations import engine
 from app.services.recommendations.matchers import CandidateProfile
 
@@ -99,6 +100,7 @@ async def get_preferences(user: CurrentUser, db: DBSession) -> dict[str, Any]:
 
 @router.put("/preferences", response_model=ApiResponse[PreferencesOut], summary="Replace recommendation preferences")
 async def put_preferences(body: PreferencesIn, user: CurrentUser, db: DBSession) -> dict[str, Any]:
+    require_remote_access(body.remote_preference == RemotePreference.REMOTE_ONLY)
     prefs = await engine.get_preferences(db, user)
     values = body.model_dump(mode="json")
     if prefs is None:

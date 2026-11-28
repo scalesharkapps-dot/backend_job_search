@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     # Withhold external apply links from listings/details for Free users, so the only way to get
     # one is POST /api/v1/jobs/{job_id}/apply-link (which enforces the limit).
     HIDE_APPLY_LINKS_FOR_FREE_USERS: bool = True
+    # Remote job listings are a Pro feature: Free users get 403 PRO_FEATURE_REQUIRED when they ask
+    # for remote jobs, and remote listings are removed from every discovery result.
+    REMOTE_JOBS_PRO_ONLY: bool = True
 
     # ---- Storage ----
     STORAGE_BACKEND: Literal["local", "supabase"] = "local"

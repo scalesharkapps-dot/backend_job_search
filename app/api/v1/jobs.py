@@ -30,6 +30,7 @@ from app.services.jsearch.filters import (
     JobSearchParams,
     SearchEmploymentType,
 )
+from app.services.plan_access import remote_jobs_restricted, require_remote_access
 from app.services.techmap.client import TechmapClient, get_techmap_client
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"], responses=ERROR_RESPONSES)
@@ -97,6 +98,7 @@ async def search_jobs(
     except ValidationError as exc:
         details = [{"field": ".".join(map(str, e["loc"])), "message": e["msg"]} for e in exc.errors()]
         raise ValidationAppError(details=details) from None
+    require_remote_access(remote_jobs_only)  # before any provider call
     enforce_user_limit("job_search", user.id, get_settings().RATE_LIMIT_SEARCH_PER_MINUTE)
     result = await job_search.search(db, params, client, techmap)
     items = [job_summary(j) for j in result.jobs]
@@ -161,7 +163,10 @@ async def sharkhire_jobs(
     def like(v: str) -> str:
         return "%" + v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
+    require_remote_access(remote)
     stmt = select(Job).where(internal_visible_filter())
+    if remote_jobs_restricted():
+        stmt = stmt.where(Job.is_remote.is_(False))
     if q:
         stmt = stmt.where(or_(Job.title.ilike(like(q), escape="\\"), Job.company_name.ilike(like(q), escape="\\")))
     if location:
