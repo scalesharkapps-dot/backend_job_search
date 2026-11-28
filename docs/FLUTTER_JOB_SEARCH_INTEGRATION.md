@@ -80,3 +80,22 @@ in the external browser. SharkHire does **not** submit external applications; af
 "Did you apply?" → `POST /applications {"job_id": "<id>"}` to track it.
 
 **SharkHire-posted jobs** (from verified employers) are listed separately: `GET /jobs/sharkhire?q=&location=&remote=`.
+
+## Opening an application link (Free plan: 5 per rolling 24 h)
+Free users (no verified subscription, e.g. during the 3-day trial) receive `job_apply_link: null`, `apply_options: []`
+and `apply_link_locked: true` in search, details, saved jobs and recommendations. Pro users (verified `app_access`
+subscription) receive the links inline as before (`apply_link_locked: false`).
+
+To apply, call `POST /api/v1/jobs/{job_id}/apply-link` with an `Idempotency-Key` header (8–128 chars, `A-Z a-z 0-9 . _ : -`,
+new value per tap, the same value on retries):
+
+* `200` → `data = {job_id, provider, apply_url, apply_options, already_opened, usage: {plan, unlimited, limit, used, remaining, reset_at}}`
+  (`provider` is `jsearch` or `techmap`). The 5 are shared across both providers: 3 JSearch + 2 Techmap = 5 used.
+  Re-opening a job already opened in the last 24 h is free (`already_opened: true`).
+* `429` `DAILY_APPLICATION_LIMIT_REACHED` → message "You've reached your daily limit of 5 job applications. Try again after
+  24 hours or upgrade to Pro for unlimited access.", `data = {code, limit, used, remaining: 0, reset_at, upgrade_available: true}`,
+  `Retry-After` header (seconds).
+* `400 internal_job_no_external_link` (SharkHire jobs: apply in-app), `404 apply_link_unavailable`, `403 subscription_required`.
+
+`GET /api/v1/jobs/application-usage` returns the same `usage` object (for a "3 of 5 left today" indicator).
+Search, job details, saving and tracking applications are never counted.

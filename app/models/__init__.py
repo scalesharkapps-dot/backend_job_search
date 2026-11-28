@@ -3,6 +3,7 @@
 from app.models.account_deletion import DeletedAccount
 from app.models.application import (
     Application,
+    ApplicationLinkAction,
     ApplicationStatusHistory,
     Interview,
     SavedJob,
@@ -32,6 +33,7 @@ from app.models.user import User, UserRole
 __all__ = [
     "AdminAuditLog",
     "Application",
+    "ApplicationLinkAction",
     "ApplicationStatusHistory",
     "Base",
     "CVExtractedData",

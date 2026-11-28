@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.models.job import EXTERNAL_SOURCES, Job
+from app.services.application_links import apply_links_visible
 
 
 class ApplyOption(BaseModel):
@@ -44,6 +45,8 @@ class JobSummaryOut(BaseModel):
     is_external: bool
     listing_unavailable: bool
     last_seen_at: datetime | None
+    # True when the apply link is withheld (Free plan): get it via POST /jobs/{id}/apply-link.
+    apply_link_locked: bool = False
 
 
 class JobOut(JobSummaryOut):
@@ -68,7 +71,12 @@ def _snippet(text: str | None, length: int = 300) -> str | None:
     return text if len(text) <= length else text[: length - 1].rsplit(" ", 1)[0] + "…"
 
 
+def _apply_link_locked(job: Job) -> bool:
+    return job.source in EXTERNAL_SOURCES and not apply_links_visible()
+
+
 def job_summary(job: Job) -> dict[str, Any]:
+    locked = _apply_link_locked(job)
     return {
         "id": job.id,
         "external_job_id": job.external_id,
@@ -89,13 +97,14 @@ def job_summary(job: Job) -> dict[str, Any]:
         "job_currency": job.salary_currency,
         "job_posted_at": job.posted_at,
         "job_posted_at_timestamp": int(job.posted_at.timestamp()) if job.posted_at else None,
-        "job_apply_link": job.apply_url,
+        "job_apply_link": None if locked else job.apply_url,
         "job_publisher": job.publisher,
         "job_description_snippet": _snippet(job.description),
         "job_required_skills": job.required_skills or [],
         "is_external": job.source in EXTERNAL_SOURCES,
         "listing_unavailable": job.unavailable_since is not None,
         "last_seen_at": job.last_seen_at,
+        "apply_link_locked": locked,
     }
 
 
@@ -105,7 +114,7 @@ def job_detail(job: Job) -> dict[str, Any]:
         employer_website=job.company_website,
         job_description=job.description,
         job_highlights=job.highlights or {},
-        apply_options=job.apply_options or [],
+        apply_options=[] if data["apply_link_locked"] else (job.apply_options or []),
         job_apply_is_direct=job.apply_is_direct,
         job_salary_text=job.salary_text,
         job_google_link=job.google_link,

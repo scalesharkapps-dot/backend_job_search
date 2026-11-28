@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     Date,
     ForeignKey,
     Index,
@@ -20,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
+from app.models.job import JobSource
 from app.models.user import str_enum
 
 
@@ -202,3 +204,30 @@ __all__ = [
     "InterviewType",
     "SavedJob",
 ]
+
+
+class ApplicationLinkAction(UUIDPrimaryKeyMixin, Base):
+    """One request to open an external job application link through SharkHire.
+
+    Drives the Free plan's rolling daily limit (only rows with ``counted`` = true count).
+    Pro users' actions are recorded with ``counted`` = false, so losing Pro later does
+    not retroactively exhaust the Free allowance.
+    """
+
+    __tablename__ = "application_link_actions"
+    __table_args__ = (
+        # Retries with the same Idempotency-Key never record a second action.
+        UniqueConstraint("user_id", "idempotency_key", name="uq_application_link_actions_user_idempotency"),
+        Index("ix_application_link_actions_user_created", "user_id", "created_at"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("jobs.id", ondelete="SET NULL"))
+    # Provider of the job (jsearch / techmap). One shared limit across providers; kept for reporting
+    # and so the record stays meaningful if the job row is later removed.
+    provider: Mapped[JobSource] = mapped_column(str_enum(JobSource, "application_link_provider"), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    counted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)

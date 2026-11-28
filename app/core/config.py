@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     REVENUECAT_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
     REVENUECAT_RETRY_BACKOFF_SECONDS: float = Field(default=0.5, ge=0)
 
+    # ---- Free plan: daily job-application-link limit (Pro = verified app_access entitlement) ----
+    APPLICATION_LINK_DAILY_LIMIT: int = Field(default=5, ge=1, le=1000)
+    APPLICATION_LINK_WINDOW_HOURS: int = Field(default=24, ge=1, le=168)
+    # Withhold external apply links from listings/details for Free users, so the only way to get
+    # one is POST /api/v1/jobs/{job_id}/apply-link (which enforces the limit).
+    HIDE_APPLY_LINKS_FOR_FREE_USERS: bool = True
+
     # ---- Storage ----
     STORAGE_BACKEND: Literal["local", "supabase"] = "local"
     LOCAL_STORAGE_DIR: str = "storage"

@@ -10,16 +10,17 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import ValidationError
 
 from app.api.deps import AppUser, DBSession
 from app.core.config import get_settings
-from app.core.exceptions import ValidationAppError
+from app.core.exceptions import BadRequestError, NotFoundError, ValidationAppError
 from app.core.rate_limit import enforce_user_limit, rate_limit
 from app.core.responses import ERROR_RESPONSES, ApiResponse, ok, paginate
+from app.models.job import EXTERNAL_SOURCES
 from app.schemas.job import JobDetailOut, JobSearchOut, Suggestion, job_detail, job_summary
-from app.services import job_search
+from app.services import application_links, job_search
 from app.services.jsearch import service as job_service
 from app.services.jsearch.client import JSearchClient
 from app.services.jsearch.filters import (
@@ -172,6 +173,68 @@ async def sharkhire_jobs(
     total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = await db.scalars(stmt.order_by(Job.published_at.desc(), Job.id).offset((page - 1) * page_size).limit(page_size))
     return ok(paginate([job_summary(j) for j in rows], page, page_size, int(total)))
+
+
+@router.get(
+    "/application-usage",
+    response_model=ApiResponse[dict[str, Any]],
+    summary="My application-link usage (Free plan daily limit)",
+)
+async def application_usage(request: Request, user: AppUser, db: DBSession) -> dict[str, Any]:
+    """Free plan: `limit` per rolling 24 h, `used`, `remaining`, `reset_at` (when the oldest
+    counted action leaves the window). Pro: `unlimited: true`. Only the caller's own usage."""
+    unlimited = bool(getattr(request.state, "application_links_unlimited", False))
+    usage = await application_links.get_usage(db, user.id, unlimited=unlimited)
+    return ok(usage.as_dict())
+
+
+@router.post(
+    "/{job_id}/apply-link",
+    response_model=ApiResponse[dict[str, Any]],
+    dependencies=[Depends(rate_limit("apply_link", "RATE_LIMIT_WRITE_PER_MINUTE"))],
+    responses={429: {"model": ApiResponse[dict[str, Any]], "description": "Daily application limit reached"}},
+    summary="Open a job's external application link (counts toward the Free plan limit)",
+)
+async def open_apply_link(
+    job_id: uuid.UUID,
+    request: Request,
+    user: AppUser,
+    db: DBSession,
+    idempotency_key: Annotated[str | None, Header(
+        alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:\-]+$",
+        description="Unique per tap; retries with the same key are not counted twice")] = None,
+) -> dict[str, Any]:
+    """Returns the external application link for an external (JSearch/Techmap) job.
+
+    Free plan: at most `APPLICATION_LINK_DAILY_LIMIT` (5) different jobs per rolling 24 h, shared
+    across JSearch and Techmap (e.g. 3 JSearch + 2 Techmap = 5 used);
+    re-opening a job already opened in the window is free. Over the limit -> 429
+    `DAILY_APPLICATION_LIMIT_REACHED` with `limit/used/remaining/reset_at/upgrade_available`.
+    Pro (verified subscription): unlimited. Search, listings and job details are never counted.
+    """
+    job = await job_service.get_job(db, job_id)
+    if job.source not in EXTERNAL_SOURCES:
+        raise BadRequestError("Apply to SharkHire jobs inside the app.", code="internal_job_no_external_link")
+    if not job.apply_url and not job.apply_options:
+        raise NotFoundError("This job has no application link.", code="apply_link_unavailable")
+    unlimited = bool(getattr(request.state, "application_links_unlimited", False))
+    # Plain values first: the service ends its transaction (rollback/commit), which expires ORM objects.
+    job_id_value, provider, apply_options = job.id, job.source, list(job.apply_options or [])
+    apply_url = job.apply_url or (apply_options[0].get("apply_link") if apply_options else None)
+    usage, reused = await application_links.open_application_link(
+        db, user.id, job_id_value, provider=provider, unlimited=unlimited, idempotency_key=idempotency_key
+    )
+    return ok(
+        {
+            "job_id": job_id_value,
+            "provider": provider.value,
+            "apply_url": apply_url,
+            "apply_options": apply_options,
+            "already_opened": reused,
+            "usage": usage.as_dict(),
+        },
+        "Application link ready",
+    )
 
 
 @router.get("/{job_id}", response_model=ApiResponse[JobDetailOut], summary="Job details")

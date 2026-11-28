@@ -35,6 +35,8 @@ os.environ.update(
         "SUPABASE_JWT_ALGORITHMS": "ES256,RS256",
         "JSEARCH_API_KEY": "test-rapidapi-key",
         "TECHMAP_API_KEY": "",  # tests opt in with the `techmap` fixture; never a real key
+        # Pre-existing tests expect apply links in payloads; tests/test_application_limit.py enables hiding.
+        "HIDE_APPLY_LINKS_FOR_FREE_USERS": "false",
         "STORAGE_BACKEND": "local",
         "LOG_LEVEL": "WARNING",
         "RATE_LIMIT_ENABLED": "true",

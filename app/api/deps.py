@@ -10,10 +10,12 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.core.security import TokenClaims, verify_access_token
 from app.models.user import User, UserRole
+from app.services.application_links import set_apply_links_visible
 from app.services.billing.revenuecat import RevenueCatClient, get_revenuecat_client
 from app.services.billing.subscriptions import evaluate_access
 from app.services.user_service import sync_user
@@ -108,6 +110,7 @@ SUBSCRIPTION_REQUIRED_MESSAGE = "Your free trial or subscription has ended. Subs
 
 
 async def require_app_access(
+    request: Request,
     user: CurrentUser,
     db: DBSession,
     client: Annotated[RevenueCatClient, Depends(get_revenuecat_client)],
@@ -118,6 +121,10 @@ async def require_app_access(
     rows). Raises ``403 subscription_required`` with the reason in ``data``/``details``.
     """
     decision = await evaluate_access(db, user, client)
+    # Pro (unlimited application links) = verified entitlement or exempt staff role. Never from the client.
+    unlimited = decision.entitlement_active or decision.access_status == "exempt"
+    request.state.application_links_unlimited = unlimited
+    set_apply_links_visible(unlimited or not get_settings().HIDE_APPLY_LINKS_FOR_FREE_USERS)
     if not decision.allowed:
         summary = decision.summary()
         raise PermissionDeniedError(

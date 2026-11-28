@@ -43,9 +43,16 @@ from app.models.profile import UserCV
 from app.models.recommendation import JobRecommendation
 from app.models.user import User, UserRole
 from app.schemas.application import ApplicationCreate, ApplicationUpdate, InterviewBase, InterviewCreate
-from app.services import visibility
+from app.services import application_links, visibility
 
 STATUS_ORDER = list(ApplicationStatus)
+
+
+async def _apply_url_allowed(db: AsyncSession, user: User, job: Job) -> bool:
+    """Copy the job's external apply link only if the user may see it (Pro, or unlocked it)."""
+    if job.source not in EXTERNAL_SOURCES or application_links.apply_links_visible():
+        return True
+    return await application_links.has_unlocked(db, user.id, job.id)
 # Which application source a tracked job records (external listings are applied to outside SharkHire).
 _APPLICATION_SOURCE = {
     JobSource.JSEARCH: ApplicationSource.JSEARCH,
@@ -214,7 +221,7 @@ async def create_application(db: AsyncSession, user: User, body: ApplicationCrea
             job_title=body.job_title or job.title,
             company_name=body.company_name or job.company_name,
             job_location=body.job_location or job.location,
-            job_apply_url=body.job_apply_url or job.apply_url,
+            job_apply_url=body.job_apply_url or (job.apply_url if await _apply_url_allowed(db, user, job) else None),
             employment_type=body.employment_type or job.employment_type,
             salary_information=body.salary_information or _salary_text(job),
             external_job_id=job.external_id if job.source in EXTERNAL_SOURCES else None,
